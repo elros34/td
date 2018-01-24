@@ -40,8 +40,7 @@ set(TL_C_SCHEME_SOURCE
 #EXECUTABLES
 if (NOT CMAKE_CROSSCOMPILING)
   add_executable(tg_cli td/telegram/cli.cpp ${TL_TD_JSON})
-  target_link_libraries(tg_cli PRIVATE memprof tdcore tdtl)
-  set(CMAKE_EXE_LINKER_FLAGS " -static")
-  target_link_libraries(tg_cli -static-libgcc -static-libstdc++)
+    set(CMAKE_EXE_LINKER_FLAGS " -static")
+  target_link_libraries(tg_cli PRIVATE memprof tdcore tdtl -static-libgcc -static-libstdc++)
   add_dependencies(tg_cli tl_generate_json)
 endif()
