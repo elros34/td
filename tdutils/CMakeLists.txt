@@ -228,6 +228,8 @@ if (ZLIB_FOUND)
   target_link_libraries(tdutils PRIVATE ${ZLIB_LIBRARIES})
   target_include_directories(tdutils SYSTEM PRIVATE ${ZLIB_INCLUDE_DIR})
 endif()
+#adding static to use under SailfishOS
+target_link_libraries(tdutils PRIVATE -static-libgcc -static-libstdc++)
 
 install(TARGETS tdutils EXPORT TdTargets
   LIBRARY DESTINATION lib

@@ -7,7 +7,7 @@ set(CPACK_PACKAGE_VERSION ${VERSION})
 set(CPACK_GENERATOR "RPM")
 set(CPACK_PACKAGE_NAME "tdlib")
 set(CPACK_PACKAGE_VERSION 1.0.0)
-set(CPACK_PACKAGE_RELEASE 1)
+set(CPACK_PACKAGE_RELEASE 2)
 set(CPACK_RPM_PACKAGE_ARCHITECTURE "armv7hl")
 set(CPACK_PACKAGE_CONTACT "Blacksailer")
 set(CPACK_PACKAGE_VENDOR "Freelancer")
@@ -572,7 +572,7 @@ target_include_directories(tdclient PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
   $<BUILD_INTERFACE:${TL_TD_AUTO_INCLUDES}>
 )
-target_link_libraries(tdclient PRIVATE tdcore)
+target_link_libraries(tdclient PRIVATE tdcore -static-libgcc -static-libstdc++)
 
 # tdc - TDLib interface in pure c.
 add_library(tdc STATIC ${TL_C_SCHEME_SOURCE} td/telegram/td_c_client.cpp td/telegram/td_c_client.h)
