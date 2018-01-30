@@ -561,7 +561,7 @@ endif()
 add_library(tdcore STATIC ${TDLIB_SOURCE})
 target_include_directories(tdcore PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}> $<BUILD_INTERFACE:${TL_TD_AUTO_INCLUDES}>)
 target_include_directories(tdcore SYSTEM PRIVATE ${OPENSSL_INCLUDE_DIR})
-target_link_libraries(tdcore PUBLIC tdactor tdutils tdnet tddb PRIVATE ${OPENSSL_CRYPTO_LIBRARY} -static-libgcc -static-libstdc++)
+target_link_libraries(tdcore PUBLIC tdactor tdutils tdnet tddb PRIVATE ${OPENSSL_CRYPTO_LIBRARY})
 
 if (NOT CMAKE_CROSSCOMPILING)
   add_dependencies(tdcore tl_generate_common)
@@ -572,7 +572,7 @@ target_include_directories(tdclient PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
   $<BUILD_INTERFACE:${TL_TD_AUTO_INCLUDES}>
 )
-target_link_libraries(tdclient PRIVATE tdcore -static-libgcc -static-libstdc++)
+target_link_libraries(tdclient PRIVATE tdcore)
 
 # tdc - TDLib interface in pure c.
 add_library(tdc STATIC ${TL_C_SCHEME_SOURCE} td/telegram/td_c_client.cpp td/telegram/td_c_client.h)
@@ -599,7 +599,7 @@ set(TD_JSON_SOURCE td/telegram/td_json_client.cpp td/telegram/td_log.cpp)
 include(GenerateExportHeader)
 
 add_library(tdjson SHARED ${TD_JSON_SOURCE} ${TD_JSON_HEADERS})
-target_link_libraries(tdjson PRIVATE tdjson_private)
+target_link_libraries(tdjson PRIVATE -static-libgcc -static-libstdc++ tdjson_private)
 generate_export_header(tdjson EXPORT_FILE_NAME ${CMAKE_CURRENT_BINARY_DIR}/td/telegram/tdjson_export.h)
 target_include_directories(tdjson PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>)
 if (APPLE)
