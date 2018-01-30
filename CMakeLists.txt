@@ -599,7 +599,7 @@ set(TD_JSON_SOURCE td/telegram/td_json_client.cpp td/telegram/td_log.cpp)
 include(GenerateExportHeader)
 
 add_library(tdjson SHARED ${TD_JSON_SOURCE} ${TD_JSON_HEADERS})
-target_link_libraries(tdjson PRIVATE -static-libgcc -static-libstdc++ tdjson_private)
+target_link_libraries(tdjson PRIVATE -Wl,-whole-archive -static-libgcc -static-libstdc++ -Wl,-no-whole-archive tdjson_private)
 generate_export_header(tdjson EXPORT_FILE_NAME ${CMAKE_CURRENT_BINARY_DIR}/td/telegram/tdjson_export.h)
 target_include_directories(tdjson PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>)
 if (APPLE)
