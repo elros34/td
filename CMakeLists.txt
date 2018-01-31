@@ -7,7 +7,7 @@ set(CPACK_PACKAGE_VERSION ${VERSION})
 set(CPACK_GENERATOR "RPM")
 set(CPACK_PACKAGE_NAME "tdlib")
 set(CPACK_PACKAGE_VERSION 1.0.0)
-set(CPACK_PACKAGE_RELEASE 2)
+set(CPACK_PACKAGE_RELEASE 3)
 set(CPACK_RPM_PACKAGE_ARCHITECTURE "armv7hl")
 set(CPACK_PACKAGE_CONTACT "Blacksailer")
 set(CPACK_PACKAGE_VENDOR "Freelancer")
@@ -575,6 +575,8 @@ target_include_directories(tdclient PUBLIC
 target_link_libraries(tdclient PRIVATE tdcore)
 
 #Shared library for TdClient
+include(GenerateExportHeader)
+
 add_library(tdclient_shared SHARED td/telegram/Client.cpp td/telegram/Client.h td/telegram/Log.cpp td/telegram/Log.h)
 target_include_directories(tdclient_shared PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
@@ -606,7 +608,7 @@ endif()
 set(TD_JSON_HEADERS td/telegram/td_json_client.h td/telegram/td_log.h)
 set(TD_JSON_SOURCE td/telegram/td_json_client.cpp td/telegram/td_log.cpp)
 
-include(GenerateExportHeader)
+
 
 add_library(tdjson SHARED ${TD_JSON_SOURCE} ${TD_JSON_HEADERS})
 target_link_libraries(tdjson PRIVATE -Wl,-whole-archive -static-libgcc -static-libstdc++ -Wl,-no-whole-archive tdjson_private)
