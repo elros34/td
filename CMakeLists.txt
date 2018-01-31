@@ -580,8 +580,8 @@ target_include_directories(tdclient_shared PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
   $<BUILD_INTERFACE:${TL_TD_AUTO_INCLUDES}>
 )
-generate_export_header(tdclient_shared EXPORT_FILE_NAME ${CMAKE_CURRENT_BINARY_DIR}/td/telegram/client_shared_export.h)
 target_link_libraries(tdclient_shared PRIVATE -Wl,-whole-archive -static-libgcc -static-libstdc++ -Wl,-no-whole-archive  tdcore)
+generate_export_header(tdclient_shared EXPORT_FILE_NAME ${CMAKE_CURRENT_BINARY_DIR}/td/telegram/client_shared_export.h)
 
 
 # tdc - TDLib interface in pure c.
