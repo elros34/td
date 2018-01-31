@@ -574,6 +574,16 @@ target_include_directories(tdclient PUBLIC
 )
 target_link_libraries(tdclient PRIVATE tdcore)
 
+#Shared library for TdClient
+add_library(tdclient_shared SHARED td/telegram/Client.cpp td/telegram/Client.h td/telegram/Log.cpp td/telegram/Log.h)
+target_include_directories(tdclient_shared PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+  $<BUILD_INTERFACE:${TL_TD_AUTO_INCLUDES}>
+)
+generate_export_header(tdclient_shared EXPORT_FILE_NAME ${CMAKE_CURRENT_BINARY_DIR}/td/telegram/client_shared_export.h)
+target_link_libraries(tdclient_shared PRIVATE -Wl,-whole-archive -static-libgcc -static-libstdc++ -Wl,-no-whole-archive  tdcore)
+
+
 # tdc - TDLib interface in pure c.
 add_library(tdc STATIC ${TL_C_SCHEME_SOURCE} td/telegram/td_c_client.cpp td/telegram/td_c_client.h)
 target_include_directories(tdc PUBLIC

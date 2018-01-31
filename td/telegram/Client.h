@@ -10,6 +10,7 @@
 
 #include "td/telegram/td_api.h"
 #include "td/telegram/td_api.hpp"
+#include "td/telegram/CLIENT_SHARED_EXPORT.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -54,12 +55,12 @@ class Client final {
   /**
    * Creates a new TDLib client.
    */
-  Client();
+  CLIENT_SHARED_EXPORT Client();
 
   /**
    * A request to the TDLib.
    */
-  struct Request {
+  CLIENT_SHARED_EXPORT struct Request {
     /**
      * Request identifier.
      * Responses to TDLib requests will have the same id as the corresponding request.
@@ -77,12 +78,12 @@ class Client final {
    * Sends request to TDLib. May be called from any thread.
    * \param[in] request Request to TDLib.
    */
-  void send(Request request);
+  CLIENT_SHARED_EXPORT void send(Request request);
 
   /**
    * A response to a request, or an incoming update from TDLib.
    */
-  struct Response {
+  CLIENT_SHARED_EXPORT struct Response {
     /**
      * TDLib request identifier, which corresponds to the response or 0 for incoming updates from TDLib.
      */
@@ -101,7 +102,7 @@ class Client final {
    * \return An incoming update or request response. The object returned in the response may be a nullptr
    *         if the timeout expires.
    */
-  Response receive(double timeout);
+  CLIENT_SHARED_EXPORT Response receive(double timeout);
 
   /**
    * Synchronously executes TDLib requests. Only a few requests can be executed synchronously.
@@ -109,22 +110,22 @@ class Client final {
    * \param[in] request Request to the TDLib.
    * \return The request response.
    */
-  static Response execute(Request request);
+  CLIENT_SHARED_EXPORT static Response execute(Request request);
 
   /**
    * Destroys the client and TDLib instance.
    */
-  ~Client();
+  CLIENT_SHARED_EXPORT ~Client();
 
   /**
    * Move constructor.
    */
-  Client(Client &&other);
+  CLIENT_SHARED_EXPORT Client(Client &&other);
 
   /**
    * Move assignment operator.
    */
-  Client &operator=(Client &&other);
+  CLIENT_SHARED_EXPORT Client &operator=(Client &&other);
 
  private:
   class Impl;
