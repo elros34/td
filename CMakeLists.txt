@@ -683,7 +683,7 @@ install(EXPORT TdTargets
 )
 
 install(FILES ${TD_JSON_HEADERS} ${CMAKE_CURRENT_BINARY_DIR}/td/telegram/tdjson_export.h DESTINATION include/td/telegram)
-install(FILES td/telegram/Client.h td/telegram/Log.h DESTINATION include/td/telegram)
+install(FILES td/telegram/Client.h td/telegram/Log.h ${CMAKE_CURRENT_BINARY_DIR}/td/telegram/client_shared_export.h DESTINATION include/td/telegram)
 install(FILES td/tl/TlObject.h DESTINATION include/td/tl)
 install(FILES ${TL_TD_AUTO_INCLUDES}/td/telegram/td_api.h ${TL_TD_AUTO_INCLUDES}/td/telegram/td_api.hpp DESTINATION include/td/telegram)
 
