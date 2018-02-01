@@ -81,6 +81,8 @@ void ClientJson::send(Slice request) {
 
 CSlice ClientJson::receive(double timeout) {
   auto response = client_.receive(timeout);
+  LOG(INFO) <<"CLIENT JSON RECEIVE"<< response.data <<json_encode<string>(ToJson(static_cast<td_api::Object &>(*response.object)));;
+
   if (!response.object) {
     return {};
   }

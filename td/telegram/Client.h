@@ -10,7 +10,6 @@
 
 #include "td/telegram/td_api.h"
 #include "td/telegram/td_api.hpp"
-#include "td/telegram/CLIENT_SHARED_EXPORT.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -55,12 +54,12 @@ class Client final {
   /**
    * Creates a new TDLib client.
    */
-  CLIENT_SHARED_EXPORT Client();
+   Client();
 
   /**
    * A request to the TDLib.
    */
-  CLIENT_SHARED_EXPORT struct Request {
+   struct Request {
     /**
      * Request identifier.
      * Responses to TDLib requests will have the same id as the corresponding request.
@@ -78,12 +77,12 @@ class Client final {
    * Sends request to TDLib. May be called from any thread.
    * \param[in] request Request to TDLib.
    */
-  CLIENT_SHARED_EXPORT void send(Request request);
+   void send(Request request);
 
   /**
    * A response to a request, or an incoming update from TDLib.
    */
-  CLIENT_SHARED_EXPORT struct Response {
+   struct Response {
     /**
      * TDLib request identifier, which corresponds to the response or 0 for incoming updates from TDLib.
      */
@@ -102,7 +101,7 @@ class Client final {
    * \return An incoming update or request response. The object returned in the response may be a nullptr
    *         if the timeout expires.
    */
-  CLIENT_SHARED_EXPORT Response receive(double timeout);
+   Response receive(double timeout);
 
   /**
    * Synchronously executes TDLib requests. Only a few requests can be executed synchronously.
@@ -110,22 +109,22 @@ class Client final {
    * \param[in] request Request to the TDLib.
    * \return The request response.
    */
-  CLIENT_SHARED_EXPORT static Response execute(Request request);
+   static Response execute(Request request);
 
   /**
    * Destroys the client and TDLib instance.
    */
-  CLIENT_SHARED_EXPORT ~Client();
+   ~Client();
 
   /**
    * Move constructor.
    */
-  CLIENT_SHARED_EXPORT Client(Client &&other);
+   Client(Client &&other);
 
   /**
    * Move assignment operator.
    */
-  CLIENT_SHARED_EXPORT Client &operator=(Client &&other);
+   Client &operator=(Client &&other);
 
  private:
   class Impl;
