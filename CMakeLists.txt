@@ -575,7 +575,7 @@ target_include_directories(tdclient PUBLIC
 target_link_libraries(tdclient PRIVATE tdcore)
 
 #Shared library for TdClient
-#include(GenerateExportHeader)
+include(GenerateExportHeader)
 
 #add_library(tdclient_shared SHARED td/telegram/Client.cpp td/telegram/Client.h td/telegram/Log.cpp td/telegram/Log.h)
 #target_include_directories(tdclient_shared PUBLIC
