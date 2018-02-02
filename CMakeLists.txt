@@ -566,24 +566,25 @@ target_link_libraries(tdcore PUBLIC tdactor tdutils tdnet tddb PRIVATE ${OPENSSL
 if (NOT CMAKE_CROSSCOMPILING)
   add_dependencies(tdcore tl_generate_common)
 endif()
-
+#Shared library for TdClient
+include(GenerateExportHeader)
 add_library(tdclient td/telegram/Client.cpp td/telegram/Client.h td/telegram/Log.cpp td/telegram/Log.h)
+add_library(tdclient_shared SHARED td/telegram/Client.cpp td/telegram/Client.h td/telegram/Log.cpp td/telegram/Log.h)
 target_include_directories(tdclient PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
   $<BUILD_INTERFACE:${TL_TD_AUTO_INCLUDES}>
 )
-target_link_libraries(tdclient PRIVATE tdcore)
-
-#Shared library for TdClient
-include(GenerateExportHeader)
-
-add_library(tdclient_shared SHARED td/telegram/Client.cpp td/telegram/Client.h td/telegram/Log.cpp td/telegram/Log.h)
 target_include_directories(tdclient_shared PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
   $<BUILD_INTERFACE:${TL_TD_AUTO_INCLUDES}>
 )
+target_link_libraries(tdclient PRIVATE tdcore)
 target_link_libraries(tdclient_shared PRIVATE -Wl,-whole-archive -static-libgcc -static-libstdc++ -Wl,-no-whole-archive  tdcore)
-generate_export_header(tdclient_shared EXPORT_FILE_NAME ${CMAKE_CURRENT_BINARY_DIR}/td/telegram/client_shared_export.h)
+generate_export_header(tdclient_shared BASE_NAME libtdclient)
+
+set_target_properties(tdclient PROPERTIES COMPILE_FLAGS -DLIBTDCLIENT_STATIC_DEFINE)
+
+
 
 
 # tdc - TDLib interface in pure c.
