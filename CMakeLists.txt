@@ -672,7 +672,7 @@ add_library(Td::TdStatic ALIAS TdStatic)
 add_library(Td::TdJson ALIAS TdJson)
 add_library(Td::TdJsonStatic ALIAS TdJsonStatic)
 
-install(TARGETS tdjson TdJson tdjson_static tdjson_private tdclient tdcore TdJsonStatic TdStatic EXPORT TdTargets
+install(TARGETS tdjson TdJson tdjson_static tdjson_private tdclient tdclient_shared tdcore TdJsonStatic TdStatic EXPORT TdTargets
   LIBRARY DESTINATION lib
   ARCHIVE DESTINATION lib
   RUNTIME DESTINATION bin
