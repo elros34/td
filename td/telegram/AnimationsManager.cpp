@@ -129,7 +129,7 @@ tl_object_ptr<td_api::animation> AnimationsManager::get_animation_object(FileId 
 
 FileId AnimationsManager::on_get_animation(std::unique_ptr<Animation> new_animation, bool replace) {
   auto file_id = new_animation->file_id;
-  LOG(INFO) << "Receive animation " << file_id;
+  LOG(INFO) << (replace ? "Replace" : "Add") << " animation " << file_id << " of size " << new_animation->dimensions;
   auto &a = animations_[file_id];
   if (a == nullptr) {
     a = std::move(new_animation);
@@ -193,6 +193,7 @@ void AnimationsManager::delete_animation_thumbnail(FileId file_id) {
 }
 
 FileId AnimationsManager::dup_animation(FileId new_id, FileId old_id) {
+  LOG(INFO) << "Dup animation " << old_id << " to " << new_id;
   const Animation *old_animation = get_animation(old_id);
   CHECK(old_animation != nullptr);
   auto &new_animation = animations_[new_id];
@@ -256,17 +257,16 @@ void AnimationsManager::create_animation(FileId file_id, PhotoSize thumbnail, st
 
 tl_object_ptr<telegram_api::InputMedia> AnimationsManager::get_input_media(
     FileId file_id, tl_object_ptr<telegram_api::InputFile> input_file,
-    tl_object_ptr<telegram_api::InputFile> input_thumbnail, const string &caption) const {
+    tl_object_ptr<telegram_api::InputFile> input_thumbnail) const {
   auto file_view = td_->file_manager_->get_file_view(file_id);
   if (file_view.is_encrypted()) {
     return nullptr;
   }
   if (file_view.has_remote_location() && !file_view.remote_location().is_web()) {
-    return make_tl_object<telegram_api::inputMediaDocument>(0, file_view.remote_location().as_input_document(), caption,
-                                                            0);
+    return make_tl_object<telegram_api::inputMediaDocument>(0, file_view.remote_location().as_input_document(), 0);
   }
   if (file_view.has_url()) {
-    return make_tl_object<telegram_api::inputMediaDocumentExternal>(0, file_view.url(), caption, 0);
+    return make_tl_object<telegram_api::inputMediaDocumentExternal>(0, file_view.url(), 0);
   }
   CHECK(!file_view.has_remote_location());
 
@@ -295,7 +295,7 @@ tl_object_ptr<telegram_api::InputMedia> AnimationsManager::get_input_media(
     }
     return make_tl_object<telegram_api::inputMediaUploadedDocument>(
         flags, false /*ignored*/, std::move(input_file), std::move(input_thumbnail), mime_type, std::move(attributes),
-        caption, vector<tl_object_ptr<telegram_api::InputDocument>>(), 0);
+        vector<tl_object_ptr<telegram_api::InputDocument>>(), 0);
   }
 
   return nullptr;

@@ -92,8 +92,8 @@ static FileId register_photo(FileManager *file_manager, FileType file_type, int6
   LOG(DEBUG) << "Receive photo of type " << static_cast<int8>(file_type) << " in [" << dc_id << "," << volume_id << ","
              << local_id << "]. Id: (" << id << ", " << access_hash << ")";
   return file_manager->register_remote(
-      FullRemoteFileLocation(file_type, id, access_hash, local_id, volume_id, secret, dc_id), owner_dialog_id,
-      file_size, 0, to_string(std::abs(id ? id : local_id)) + ".jpg");
+      FullRemoteFileLocation(file_type, id, access_hash, local_id, volume_id, secret, dc_id),
+      FileLocationSource::FromServer, owner_dialog_id, file_size, 0, to_string(std::abs(id ? id : local_id)) + ".jpg");
 }
 
 ProfilePhoto get_profile_photo(FileManager *file_manager,
@@ -221,8 +221,8 @@ PhotoSize get_thumbnail_photo_size(FileManager *file_manager, BufferSlice bytes,
   auto volume_id = Random::secure_int64();
   auto secret = 0;
   res.file_id = file_manager->register_remote(
-      FullRemoteFileLocation(FileType::EncryptedThumbnail, 0, 0, local_id, volume_id, secret, dc_id), owner_dialog_id,
-      res.size, 0, to_string(std::abs(local_id)) + ".jpg");
+      FullRemoteFileLocation(FileType::EncryptedThumbnail, 0, 0, local_id, volume_id, secret, dc_id),
+      FileLocationSource::FromServer, owner_dialog_id, res.size, 0, to_string(std::abs(local_id)) + ".jpg");
   file_manager->set_content(res.file_id, std::move(bytes));
 
   return res;
@@ -315,7 +315,7 @@ Photo get_photo(FileManager *file_manager, tl_object_ptr<telegram_api::encrypted
   CHECK(DcId::is_valid(file->dc_id_));
   FileId file_id = file_manager->register_remote(
       FullRemoteFileLocation(FileType::Encrypted, file->id_, file->access_hash_, DcId::internal(file->dc_id_)),
-      owner_dialog_id, photo->size_, 0, to_string(std::abs(file->id_)) + ".jpg");
+      FileLocationSource::FromServer, owner_dialog_id, photo->size_, 0, to_string(std::abs(file->id_)) + ".jpg");
   file_manager->set_encryption_key(file_id, FileEncryptionKey{photo->key_.as_slice(), photo->iv_.as_slice()});
 
   Photo res;
@@ -386,7 +386,17 @@ bool photo_has_input_media(FileManager *file_manager, const Photo &photo, bool i
   auto file_id = photo.photos.back().file_id;
   auto file_view = file_manager->get_file_view(file_id);
   if (is_secret) {
-    return file_view.is_encrypted() && file_view.has_remote_location();
+    if (file_view.encryption_key().empty() || !file_view.has_remote_location()) {
+      return false;
+    }
+
+    for (const auto &size : photo.photos) {
+      if (size.type == 't' && size.file_id.is_valid()) {
+        return false;
+      }
+    }
+
+    return true;
   } else {
     if (file_view.is_encrypted()) {
       return false;
@@ -397,7 +407,7 @@ bool photo_has_input_media(FileManager *file_manager, const Photo &photo, bool i
 
 tl_object_ptr<telegram_api::InputMedia> photo_get_input_media(FileManager *file_manager, const Photo &photo,
                                                               tl_object_ptr<telegram_api::InputFile> input_file,
-                                                              const string &caption, int32 ttl) {
+                                                              int32 ttl) {
   if (!photo.photos.empty()) {
     auto file_id = photo.photos.back().file_id;
     auto file_view = file_manager->get_file_view(file_id);
@@ -409,17 +419,15 @@ tl_object_ptr<telegram_api::InputMedia> photo_get_input_media(FileManager *file_
       if (ttl != 0) {
         flags |= telegram_api::inputMediaPhoto::TTL_SECONDS_MASK;
       }
-      return make_tl_object<telegram_api::inputMediaPhoto>(flags, file_view.remote_location().as_input_photo(), caption,
-                                                           ttl);
+      return make_tl_object<telegram_api::inputMediaPhoto>(flags, file_view.remote_location().as_input_photo(), ttl);
     }
     if (file_view.has_url()) {
       int32 flags = 0;
       if (ttl != 0) {
         flags |= telegram_api::inputMediaPhotoExternal::TTL_SECONDS_MASK;
       }
-      LOG(INFO) << "Create inputMediaPhotoExternal with a URL " << file_view.url() << ", caption " << caption
-                << " and ttl " << ttl;
-      return make_tl_object<telegram_api::inputMediaPhotoExternal>(flags, file_view.url(), caption, ttl);
+      LOG(INFO) << "Create inputMediaPhotoExternal with a URL " << file_view.url() << " and ttl " << ttl;
+      return make_tl_object<telegram_api::inputMediaPhotoExternal>(flags, file_view.url(), ttl);
     }
     CHECK(!file_view.has_remote_location());
   }
@@ -434,7 +442,7 @@ tl_object_ptr<telegram_api::InputMedia> photo_get_input_media(FileManager *file_
       flags |= telegram_api::inputMediaUploadedPhoto::TTL_SECONDS_MASK;
     }
 
-    return make_tl_object<telegram_api::inputMediaUploadedPhoto>(flags, std::move(input_file), caption,
+    return make_tl_object<telegram_api::inputMediaUploadedPhoto>(flags, std::move(input_file),
                                                                  std::move(added_stickers), ttl);
   }
   return nullptr;

@@ -14,9 +14,11 @@
 #include "td/utils/port/Stat.h"
 #include "td/utils/port/thread.h"
 #include "td/utils/Random.h"
+#include "td/utils/Slice.h"
 #include "td/utils/tests.h"
 
 #include <atomic>
+#include <clocale>
 #include <limits>
 
 using namespace td;
@@ -115,7 +117,31 @@ TEST(Misc, errno_tls_bug) {
 }
 
 TEST(Misc, base64) {
-  for (int l = 0; l < 300000; l += l / 20 + 1) {
+  ASSERT_TRUE(is_base64("dGVzdA==") == true);
+  ASSERT_TRUE(is_base64("dGVzdB==") == false);
+  ASSERT_TRUE(is_base64("dGVzdA=") == false);
+  ASSERT_TRUE(is_base64("dGVzdA") == false);
+  ASSERT_TRUE(is_base64("dGVz") == true);
+  ASSERT_TRUE(is_base64("") == true);
+  ASSERT_TRUE(is_base64("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/") == true);
+  ASSERT_TRUE(is_base64("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=") == false);
+  ASSERT_TRUE(is_base64("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-/") == false);
+  ASSERT_TRUE(is_base64("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_") == false);
+  ASSERT_TRUE(is_base64("====") == false);
+
+  ASSERT_TRUE(is_base64url("dGVzdA==") == true);
+  ASSERT_TRUE(is_base64url("dGVzdB==") == false);
+  ASSERT_TRUE(is_base64url("dGVzdA=") == false);
+  ASSERT_TRUE(is_base64url("dGVzdA") == true);
+  ASSERT_TRUE(is_base64url("dGVz") == true);
+  ASSERT_TRUE(is_base64url("") == true);
+  ASSERT_TRUE(is_base64url("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_") == true);
+  ASSERT_TRUE(is_base64url("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_=") == false);
+  ASSERT_TRUE(is_base64url("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-/") == false);
+  ASSERT_TRUE(is_base64url("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/") == false);
+  ASSERT_TRUE(is_base64url("====") == false);
+
+  for (int l = 0; l < 300000; l += l / 20 + l / 1000 * 500 + 1) {
     for (int t = 0; t < 10; t++) {
       string s = rand_string(std::numeric_limits<char>::min(), std::numeric_limits<char>::max(), l);
       string encoded = base64url_encode(s);
@@ -162,4 +188,36 @@ TEST(Misc, to_integer) {
   ASSERT_EQ(to_integer_safe<int64>("-12345678910111213").ok(), -12345678910111213);
   ASSERT_EQ(to_integer_safe<uint64>("12345678910111213").ok(), 12345678910111213ull);
   ASSERT_TRUE(to_integer_safe<uint64>("-12345678910111213").is_error());
+}
+
+static void test_to_double_one(CSlice str, Slice expected) {
+  auto result = PSTRING() << to_double(str);
+  if (expected != result) {
+    LOG(ERROR) << "To double conversion failed: have " << str << ", expected " << expected << ", parsed "
+               << to_double(str) << ", got " << result;
+  }
+}
+
+static void test_to_double() {
+  test_to_double_one("0", "0");
+  test_to_double_one("1", "1");
+  test_to_double_one("-10", "-10");
+  test_to_double_one("1.234", "1.234");
+  test_to_double_one("-1.234e2", "-123.4");
+  test_to_double_one("inf", "inf");
+  test_to_double_one("  inF  asdasd", "inf");
+  test_to_double_one("  inFasdasd", "0");
+  test_to_double_one("  NaN", "nan");
+  test_to_double_one("  12345678910111213141516171819  asdasd", "1.23457e+28");
+  test_to_double_one("1.234567891011121314E123", "1.23457e+123");
+  test_to_double_one("123456789", "1.23457e+08");
+  test_to_double_one("-1,234567891011121314E123", "-1");
+}
+
+TEST(Misc, to_double) {
+  test_to_double();
+  std::setlocale(LC_ALL, "fr-FR");
+  test_to_double();
+  std::setlocale(LC_ALL, "C");
+  test_to_double();
 }

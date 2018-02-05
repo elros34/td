@@ -67,7 +67,7 @@ class DocumentsManager {
 
   void create_document(FileId file_id, PhotoSize thumbnail, string file_name, string mime_type, bool replace);
 
-  bool has_input_media(FileId file_id, bool is_secret) const;
+  bool has_input_media(FileId file_id, FileId thumbnail_file_id, bool is_secret) const;
 
   SecretInputMedia get_secret_input_media(FileId document_file_id,
                                           tl_object_ptr<telegram_api::InputEncryptedFile> input_file,
@@ -75,8 +75,7 @@ class DocumentsManager {
 
   tl_object_ptr<telegram_api::InputMedia> get_input_media(FileId file_id,
                                                           tl_object_ptr<telegram_api::InputFile> input_file,
-                                                          tl_object_ptr<telegram_api::InputFile> input_thumbnail,
-                                                          const string &caption) const;
+                                                          tl_object_ptr<telegram_api::InputFile> input_thumbnail) const;
 
   FileId get_document_thumbnail_file_id(FileId file_id) const;
 

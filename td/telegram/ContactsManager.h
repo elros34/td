@@ -204,6 +204,8 @@ class ContactsManager : public Actor {
 
   void on_update_online_status_privacy();
 
+  void on_channel_unban_timeout(ChannelId channel_id);
+
   void set_account_ttl(int32 account_ttl, Promise<Unit> &&promise) const;
   void get_account_ttl(Promise<int32> &&promise) const;
 
@@ -362,21 +364,29 @@ class ContactsManager : public Actor {
 
   vector<UserId> get_dialog_administrators(DialogId chat_id, int left_tries, Promise<Unit> &&promise);
 
+  int32 get_user_id_object(UserId user_id, const char *source) const;
+
   tl_object_ptr<td_api::user> get_user_object(UserId user_id) const;
 
-  static vector<int32> get_user_ids_object(const vector<UserId> &user_ids);
+  vector<int32> get_user_ids_object(const vector<UserId> &user_ids) const;
 
-  static tl_object_ptr<td_api::users> get_users_object(int32 total_count, const vector<UserId> &user_ids);
+  tl_object_ptr<td_api::users> get_users_object(int32 total_count, const vector<UserId> &user_ids) const;
 
   tl_object_ptr<td_api::userFullInfo> get_user_full_info_object(UserId user_id) const;
 
-  tl_object_ptr<td_api::basicGroup> get_basic_group_object(ChatId chat_id) const;
+  int32 get_basic_group_id_object(ChatId chat_id, const char *source) const;
+
+  tl_object_ptr<td_api::basicGroup> get_basic_group_object(ChatId chat_id);
 
   tl_object_ptr<td_api::basicGroupFullInfo> get_basic_group_full_info_object(ChatId chat_id) const;
+
+  int32 get_supergroup_id_object(ChannelId channel_id, const char *source) const;
 
   tl_object_ptr<td_api::supergroup> get_supergroup_object(ChannelId channel_id) const;
 
   tl_object_ptr<td_api::supergroupFullInfo> get_channel_full_info_object(ChannelId channel_id) const;
+
+  int32 get_secret_chat_id_object(SecretChatId secret_chat_id, const char *source) const;
 
   tl_object_ptr<td_api::secretChat> get_secret_chat_object(SecretChatId secret_chat_id);
 
@@ -408,15 +418,16 @@ class ContactsManager : public Actor {
 
     ProfilePhoto photo;
 
-    int32 was_online = 0;
     string restriction_reason;
     string inline_query_placeholder;
     int32 bot_info_version = -1;
 
-    LinkState outbound = LinkState::Unknown;
-    LinkState inbound = LinkState::Unknown;
+    int32 was_online = 0;
 
     string language_code;
+
+    LinkState outbound = LinkState::Unknown;
+    LinkState inbound = LinkState::Unknown;
 
     bool is_received = false;
     bool is_verified = false;
@@ -463,16 +474,19 @@ class ContactsManager : public Actor {
     vector<Photo> photos;
     int32 photo_count = -1;
     int32 photos_offset = -1;
-    bool getting_photos_now = false;
 
     std::unique_ptr<BotInfo> bot_info;
+
+    string about;
+
+    int32 common_chat_count = 0;
+
+    bool getting_photos_now = false;
 
     bool is_inited = false;  // photos and bot_info may be inited regardless this flag
     bool is_blocked = false;
     bool can_be_called = false;
     bool has_private_calls = false;
-    string about;
-    int32 common_chat_count = 0;
 
     bool is_changed = true;
 
@@ -531,9 +545,9 @@ class ContactsManager : public Actor {
     string title;
     DialogPhoto photo;
     string username;
-    int32 date = 0;
     string restriction_reason;
     DialogParticipantStatus status = DialogParticipantStatus::Banned(0);
+    int32 date = 0;
     int32 participant_count = 0;
 
     bool anyone_can_invite = false;
@@ -571,10 +585,10 @@ class ContactsManager : public Actor {
     string invite_link;
     MessageId pinned_message_id;
 
-    ChatId migrated_from_chat_id;
-    MessageId migrated_from_max_message_id;
-
     int64 sticker_set_id = 0;  // do not forget to store along with access hash
+
+    MessageId migrated_from_max_message_id;
+    ChatId migrated_from_chat_id;
 
     bool can_get_participants = false;
     bool can_set_username = false;
@@ -591,11 +605,12 @@ class ContactsManager : public Actor {
     int64 access_hash = 0;
     UserId user_id;
     SecretChatState state;
-    bool is_outbound = false;
+    string key_hash;
     int32 ttl = 0;
     int32 date = 0;
-    string key_hash;
     int32 layer = 0;
+
+    bool is_outbound = false;
 
     bool is_changed = true;        // have new changes not sent to the database except changes visible to the client
     bool need_send_update = true;  // have new changes not sent to the client
@@ -930,7 +945,7 @@ class ContactsManager : public Actor {
 
   tl_object_ptr<td_api::userFullInfo> get_user_full_info_object(UserId user_id, const UserFull *user_full) const;
 
-  tl_object_ptr<td_api::basicGroup> get_basic_group_object(ChatId chat_id, const Chat *chat) const;
+  tl_object_ptr<td_api::basicGroup> get_basic_group_object(ChatId chat_id, const Chat *chat);
 
   tl_object_ptr<td_api::basicGroupFullInfo> get_basic_group_full_info_object(const ChatFull *chat_full) const;
 
@@ -972,15 +987,19 @@ class ContactsManager : public Actor {
 
   std::unordered_map<UserId, User, UserIdHash> users_;
   std::unordered_map<UserId, UserFull, UserIdHash> users_full_;
+  mutable std::unordered_set<UserId, UserIdHash> unknown_users_;
 
   std::unordered_map<ChatId, Chat, ChatIdHash> chats_;
   std::unordered_map<ChatId, ChatFull, ChatIdHash> chats_full_;
+  mutable std::unordered_set<ChatId, ChatIdHash> unknown_chats_;
 
   std::unordered_set<ChannelId, ChannelIdHash> min_channels_;
   std::unordered_map<ChannelId, Channel, ChannelIdHash> channels_;
   std::unordered_map<ChannelId, ChannelFull, ChannelIdHash> channels_full_;
+  mutable std::unordered_set<ChannelId, ChannelIdHash> unknown_channels_;
 
   std::unordered_map<SecretChatId, SecretChat, SecretChatIdHash> secret_chats_;
+  mutable std::unordered_set<SecretChatId, SecretChatIdHash> unknown_secret_chats_;
 
   std::unordered_map<UserId, vector<SecretChatId>, UserIdHash> secret_chats_with_user_;
 

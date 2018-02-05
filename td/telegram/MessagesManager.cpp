@@ -5,7 +5,6 @@
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 //
 #include "td/telegram/MessagesManager.h"
-
 #include "td/telegram/secret_api.hpp"
 #include "td/telegram/td_api.hpp"
 #include "td/telegram/telegram_api.h"
@@ -378,18 +377,20 @@ class ExportChannelMessageLinkQuery : public Td::ResultHandler {
   Promise<Unit> promise_;
   ChannelId channel_id_;
   MessageId message_id_;
+  bool for_group_;
 
  public:
   explicit ExportChannelMessageLinkQuery(Promise<Unit> &&promise) : promise_(std::move(promise)) {
   }
 
-  void send(ChannelId channel_id, MessageId message_id) {
+  void send(ChannelId channel_id, MessageId message_id, bool for_group) {
     channel_id_ = channel_id;
     message_id_ = message_id;
+    for_group_ = for_group;
     auto input_channel = td->contacts_manager_->get_input_channel(channel_id);
     CHECK(input_channel != nullptr);
-    send_query(G()->net_query_creator().create(create_storer(
-        telegram_api::channels_exportMessageLink(std::move(input_channel), message_id.get_server_message_id().get()))));
+    send_query(G()->net_query_creator().create(create_storer(telegram_api::channels_exportMessageLink(
+        std::move(input_channel), message_id.get_server_message_id().get(), for_group))));
   }
 
   void on_result(uint64 id, BufferSlice packet) override {
@@ -400,7 +401,8 @@ class ExportChannelMessageLinkQuery : public Td::ResultHandler {
 
     auto ptr = result_ptr.move_as_ok();
     LOG(DEBUG) << "Receive result for ExportChannelMessageLinkQuery " << to_string(ptr);
-    td->messages_manager_->on_get_public_message_link({DialogId(channel_id_), message_id_}, std::move(ptr->link_));
+    td->messages_manager_->on_get_public_message_link({DialogId(channel_id_), message_id_}, for_group_,
+                                                      std::move(ptr->link_), std::move(ptr->html_));
 
     promise_.set_value(Unit());
   }
@@ -465,17 +467,13 @@ class GetDialogListQuery : public NetActorOnce {
 };
 
 class SearchPublicDialogsQuery : public Td::ResultHandler {
-  Promise<Unit> promise_;
   string query_;
 
  public:
-  explicit SearchPublicDialogsQuery(Promise<Unit> &&promise) : promise_(std::move(promise)) {
-  }
-
   void send(const string &query) {
     query_ = query;
     send_query(G()->net_query_creator().create(
-        create_storer(telegram_api::contacts_search(query, 100 /* ignored server-side */))));
+        create_storer(telegram_api::contacts_search(query, 3 /* ignored server-side */))));
   }
 
   void on_result(uint64 id, BufferSlice packet) override {
@@ -488,15 +486,13 @@ class SearchPublicDialogsQuery : public Td::ResultHandler {
     LOG(INFO) << "Receive result for SearchPublicDialogsQuery " << to_string(dialogs);
     td->contacts_manager_->on_get_chats(std::move(dialogs->chats_));
     td->contacts_manager_->on_get_users(std::move(dialogs->users_));
-    td->messages_manager_->on_get_public_dialogs_search_result(query_, std::move(dialogs->results_));
-
-    promise_.set_value(Unit());
+    td->messages_manager_->on_get_public_dialogs_search_result(query_, std::move(dialogs->my_results_),
+                                                               std::move(dialogs->results_));
   }
 
   void on_error(uint64 id, Status status) override {
-    td->messages_manager_->on_failed_public_dialogs_search(query_);
     LOG(ERROR) << "Receive error for SearchPublicDialogsQuery: " << status;
-    promise_.set_error(std::move(status));
+    td->messages_manager_->on_failed_public_dialogs_search(query_, std::move(status));
   }
 };
 
@@ -776,7 +772,7 @@ class SaveDraftMessageQuery : public Td::ResultHandler {
       if (draft_message->input_message_text.disable_web_page_preview) {
         flags |= MessagesManager::SEND_MESSAGE_FLAG_DISABLE_WEB_PAGE_PREVIEW;
       }
-      if (draft_message->input_message_text.entities.size()) {
+      if (draft_message->input_message_text.text.entities.size()) {
         flags |= MessagesManager::SEND_MESSAGE_FLAG_HAS_ENTITIES;
       }
     }
@@ -784,10 +780,10 @@ class SaveDraftMessageQuery : public Td::ResultHandler {
     dialog_id_ = dialog_id;
     send_query(G()->net_query_creator().create(create_storer(telegram_api::messages_saveDraft(
         flags, false /*ignored*/, reply_to_message_id.get(), std::move(input_peer),
-        draft_message == nullptr ? "" : draft_message->input_message_text.text,
-        draft_message == nullptr
-            ? vector<tl_object_ptr<telegram_api::MessageEntity>>()
-            : get_input_message_entities(td->contacts_manager_.get(), draft_message->input_message_text.entities)))));
+        draft_message == nullptr ? "" : draft_message->input_message_text.text.text,
+        draft_message == nullptr ? vector<tl_object_ptr<telegram_api::MessageEntity>>()
+                                 : get_input_message_entities(td->contacts_manager_.get(),
+                                                              draft_message->input_message_text.text.entities)))));
   }
 
   void on_result(uint64 id, BufferSlice packet) override {
@@ -1378,7 +1374,7 @@ class SearchMessagesQuery : public Td::ResultHandler {
 
   void on_error(uint64 id, Status status) override {
     td->messages_manager_->on_get_dialog_error(dialog_id_, status, "SearchMessagesQuery");
-    td->messages_manager_->on_failed_dialog_messages_search(random_id_);
+    td->messages_manager_->on_failed_dialog_messages_search(dialog_id_, random_id_);
     promise_.set_error(std::move(status));
   }
 };
@@ -1776,6 +1772,11 @@ class SendSecretMessageActor : public NetActor {
   void send(DialogId dialog_id, int64 reply_to_random_id, int32 ttl, const string &message, SecretInputMedia media,
             vector<tl_object_ptr<secret_api::MessageEntity>> &&entities, UserId via_bot_user_id, int64 media_album_id,
             int64 random_id) {
+    if (false && !media.empty()) {
+      td->messages_manager_->on_send_secret_message_error(random_id, Status::Error(400, "FILE_PART_1_MISSING"), Auto());
+      return;
+    }
+
     CHECK(dialog_id.get_type() == DialogType::SecretChat);
     random_id_ = random_id;
 
@@ -2087,8 +2088,10 @@ class SendMediaActor : public NetActorOnce {
 
  public:
   void send(FileId file_id, FileId thumbnail_file_id, int32 flags, DialogId dialog_id, MessageId reply_to_message_id,
-            tl_object_ptr<telegram_api::ReplyMarkup> &&reply_markup, tl_object_ptr<telegram_api::InputMedia> &&message,
-            int64 random_id, NetQueryRef *send_query_ref, uint64 sequence_dispatcher_id) {
+            tl_object_ptr<telegram_api::ReplyMarkup> &&reply_markup,
+            vector<tl_object_ptr<telegram_api::MessageEntity>> &&entities, const string &message,
+            tl_object_ptr<telegram_api::InputMedia> &&input_media, int64 random_id, NetQueryRef *send_query_ref,
+            uint64 sequence_dispatcher_id) {
     random_id_ = random_id;
     file_id_ = file_id;
     thumbnail_file_id_ = thumbnail_file_id;
@@ -2099,10 +2102,14 @@ class SendMediaActor : public NetActorOnce {
       on_error(0, Status::Error(400, "Have no write access to the chat"));
       return;
     }
+    if (!entities.empty()) {
+      flags |= telegram_api::messages_sendMedia::ENTITIES_MASK;
+    }
 
     telegram_api::messages_sendMedia request(flags, false /*ignored*/, false /*ignored*/, false /*ignored*/,
                                              std::move(input_peer), reply_to_message_id.get_server_message_id().get(),
-                                             std::move(message), random_id, std::move(reply_markup));
+                                             std::move(input_media), message, random_id, std::move(reply_markup),
+                                             std::move(entities));
     LOG(INFO) << "Send media: " << to_string(request);
     auto query = G()->net_query_creator().create(create_storer(request));
     if (G()->shared_config().get_option_boolean("use_quick_ack")) {
@@ -2830,7 +2837,7 @@ class GetNotifySettingsQuery : public Td::ResultHandler {
   void send(NotificationSettingsScope scope) {
     scope_ = scope;
     auto input_notify_peer = td->messages_manager_->get_input_notify_peer(scope);
-    CHECK(input_notify_peer != nullptr);
+    CHECK(input_notify_peer != nullptr) << scope;
     send_query(G()->net_query_creator().create(
         create_storer(telegram_api::account_getNotifySettings(std::move(input_notify_peer)))));
   }
@@ -3209,7 +3216,7 @@ class GetChannelAdminLogQuery : public Td::ResultHandler {
 
 bool operator==(const InputMessageText &lhs, const InputMessageText &rhs) {
   return lhs.text == rhs.text && lhs.disable_web_page_preview == rhs.disable_web_page_preview &&
-         lhs.clear_draft == rhs.clear_draft && lhs.entities == rhs.entities;
+         lhs.clear_draft == rhs.clear_draft;
 }
 
 bool operator!=(const InputMessageText &lhs, const InputMessageText &rhs) {
@@ -3340,7 +3347,6 @@ static void store(const MessageContent *content, StorerT &storer) {
     case MessageText::ID: {
       auto m = static_cast<const MessageText *>(content);
       store(m->text, storer);
-      store(m->entities, storer);
       store(m->web_page_id, storer);
       break;
     }
@@ -3498,6 +3504,16 @@ static void store(const MessageContent *content, StorerT &storer) {
 }
 
 template <class ParserT>
+static void parse_caption(FormattedText &caption, ParserT &parser) {
+  parse(caption.text, parser);
+  if (parser.version() >= static_cast<int32>(Version::AddCaptionEntities)) {
+    parse(caption.entities, parser);
+  } else {
+    caption.entities = find_entities(caption.text, false);
+  }
+}
+
+template <class ParserT>
 static void parse(unique_ptr<MessageContent> &content, ParserT &parser) {
   Td *td = parser.context()->td().get_actor_unsafe();
   CHECK(td != nullptr);
@@ -3510,7 +3526,7 @@ static void parse(unique_ptr<MessageContent> &content, ParserT &parser) {
     case MessageAnimation::ID: {
       auto m = make_unique<MessageAnimation>();
       m->file_id = td->animations_manager_->parse_animation(parser);
-      parse(m->caption, parser);
+      parse_caption(m->caption, parser);
       is_bad = !m->file_id.is_valid();
       content = std::move(m);
       break;
@@ -3518,7 +3534,7 @@ static void parse(unique_ptr<MessageContent> &content, ParserT &parser) {
     case MessageAudio::ID: {
       auto m = make_unique<MessageAudio>();
       m->file_id = td->audios_manager_->parse_audio(parser);
-      parse(m->caption, parser);
+      parse_caption(m->caption, parser);
       bool legacy_is_listened;
       parse(legacy_is_listened, parser);
       is_bad = !m->file_id.is_valid();
@@ -3534,7 +3550,7 @@ static void parse(unique_ptr<MessageContent> &content, ParserT &parser) {
     case MessageDocument::ID: {
       auto m = make_unique<MessageDocument>();
       m->file_id = td->documents_manager_->parse_document(parser);
-      parse(m->caption, parser);
+      parse_caption(m->caption, parser);
       is_bad = !m->file_id.is_valid();
       content = std::move(m);
       break;
@@ -3585,7 +3601,7 @@ static void parse(unique_ptr<MessageContent> &content, ParserT &parser) {
           is_bad = true;
         }
       }
-      parse(m->caption, parser);
+      parse_caption(m->caption, parser);
       content = std::move(m);
       break;
     }
@@ -3599,7 +3615,6 @@ static void parse(unique_ptr<MessageContent> &content, ParserT &parser) {
     case MessageText::ID: {
       auto m = make_unique<MessageText>();
       parse(m->text, parser);
-      parse(m->entities, parser);
       parse(m->web_page_id, parser);
       content = std::move(m);
       break;
@@ -3616,7 +3631,7 @@ static void parse(unique_ptr<MessageContent> &content, ParserT &parser) {
     case MessageVideo::ID: {
       auto m = make_unique<MessageVideo>();
       m->file_id = td->videos_manager_->parse_video(parser);
-      parse(m->caption, parser);
+      parse_caption(m->caption, parser);
       is_bad = !m->file_id.is_valid();
       content = std::move(m);
       break;
@@ -3632,7 +3647,7 @@ static void parse(unique_ptr<MessageContent> &content, ParserT &parser) {
     case MessageVoiceNote::ID: {
       auto m = make_unique<MessageVoiceNote>();
       m->file_id = td->voice_notes_manager_->parse_voice_note(parser);
-      parse(m->caption, parser);
+      parse_caption(m->caption, parser);
       parse(m->is_listened, parser);
       is_bad = !m->file_id.is_valid();
       content = std::move(m);
@@ -4057,7 +4072,6 @@ void store(const InputMessageText &input_message_text, StorerT &storer) {
   STORE_FLAG(input_message_text.clear_draft);
   END_STORE_FLAGS();
   store(input_message_text.text, storer);
-  store(input_message_text.entities, storer);
 }
 
 template <class ParserT>
@@ -4067,7 +4081,6 @@ void parse(InputMessageText &input_message_text, ParserT &parser) {
   PARSE_FLAG(input_message_text.clear_draft);
   END_PARSE_FLAGS();
   parse(input_message_text.text, parser);
-  parse(input_message_text.entities, parser);
 }
 
 template <class StorerT>
@@ -4124,6 +4137,7 @@ void MessagesManager::Dialog::store(StorerT &storer) const {
   STORE_FLAG(has_deleted_last_message);
   STORE_FLAG(has_last_clear_history_message_id);
   STORE_FLAG(is_last_message_deleted_locally);
+  STORE_FLAG(has_contact_registered_message);
   END_STORE_FLAGS();
 
   store(dialog_id, storer);  // must be stored at offset 4
@@ -4217,6 +4231,7 @@ void MessagesManager::Dialog::parse(ParserT &parser) {
   PARSE_FLAG(has_deleted_last_message);
   PARSE_FLAG(has_last_clear_history_message_id);
   PARSE_FLAG(is_last_message_deleted_locally);
+  PARSE_FLAG(has_contact_registered_message);
   END_PARSE_FLAGS();
 
   parse(dialog_id, parser);  // must be stored at offset 4
@@ -4577,7 +4592,7 @@ int32 MessagesManager::get_message_content_index_mask(const MessageContent *cont
       return search_messages_filter_index_mask(SearchMessagesFilter::Photo) |
              search_messages_filter_index_mask(SearchMessagesFilter::PhotoAndVideo);
     case MessageText::ID:
-      for (auto &entity : static_cast<const MessageText *>(content)->entities) {
+      for (auto &entity : static_cast<const MessageText *>(content)->text.entities) {
         if (entity.type == MessageEntity::Type::Url || entity.type == MessageEntity::Type::EmailAddress) {
           return search_messages_filter_index_mask(SearchMessagesFilter::Url);
         }
@@ -4747,6 +4762,30 @@ bool MessagesManager::have_dialog_info(DialogId dialog_id) const {
     case DialogType::SecretChat: {
       SecretChatId secret_chat_id = dialog_id.get_secret_chat_id();
       return td_->contacts_manager_->have_secret_chat(secret_chat_id);
+    }
+    case DialogType::None:
+    default:
+      return false;
+  }
+}
+
+bool MessagesManager::have_dialog_info_force(DialogId dialog_id) const {
+  switch (dialog_id.get_type()) {
+    case DialogType::User: {
+      UserId user_id = dialog_id.get_user_id();
+      return td_->contacts_manager_->have_user_force(user_id);
+    }
+    case DialogType::Chat: {
+      ChatId chat_id = dialog_id.get_chat_id();
+      return td_->contacts_manager_->have_chat_force(chat_id);
+    }
+    case DialogType::Channel: {
+      ChannelId channel_id = dialog_id.get_channel_id();
+      return td_->contacts_manager_->have_channel_force(channel_id);
+    }
+    case DialogType::SecretChat: {
+      SecretChatId secret_chat_id = dialog_id.get_secret_chat_id();
+      return td_->contacts_manager_->have_secret_chat_force(secret_chat_id);
     }
     case DialogType::None:
     default:
@@ -5043,7 +5082,8 @@ MessagesManager::Dialog *MessagesManager::get_service_notifications_dialog() {
 void MessagesManager::on_update_service_notification(tl_object_ptr<telegram_api::updateServiceNotification> &&update) {
   int32 ttl = 0;
   auto content = get_message_content(
-      std::move(update->message_), std::move(update->media_), std::move(update->entities_),
+      get_message_text(std::move(update->message_), std::move(update->entities_), update->inbox_date_),
+      std::move(update->media_),
       td_->auth_manager_->is_bot() ? DialogId() : get_service_notifications_dialog()->dialog_id, false, UserId(), &ttl);
   if ((update->flags_ & telegram_api::updateServiceNotification::POPUP_MASK) != 0) {
     send_closure(
@@ -5099,6 +5139,10 @@ void MessagesManager::on_update_contact_registered(tl_object_ptr<telegram_api::u
     Dialog *d = get_dialog(dialog_id);
     CHECK(d != nullptr);
 
+    if (d->has_contact_registered_message) {
+      LOG(INFO) << "Ignore duplicate updateContactRegistered about " << user_id;
+      return;
+    }
     if (d->last_message_id.is_valid()) {
       auto m = get_message(d, d->last_message_id);
       CHECK(m != nullptr);
@@ -5302,8 +5346,8 @@ void MessagesManager::on_update_message_views(FullMessageId full_message_id, int
     return;
   }
 
-  if (update_message_views(full_message_id.get_dialog_id(), m, views) && !message_id.is_yet_unsent()) {
-    add_message_to_database(d, m, "on_update_message_views");
+  if (update_message_views(full_message_id.get_dialog_id(), m, views)) {
+    on_message_changed(d, m, "on_update_message_views");
   }
 }
 
@@ -5318,13 +5362,14 @@ bool MessagesManager::update_message_views(DialogId dialog_id, Message *m, int32
   return false;
 }
 
-bool MessagesManager::update_message_contains_unread_mention(Dialog *d, Message *m, bool contains_unread_mention) {
-  CHECK(m != nullptr);
+bool MessagesManager::update_message_contains_unread_mention(Dialog *d, Message *m, bool contains_unread_mention,
+                                                             const char *source) {
+  CHECK(m != nullptr) << source;
   if (!contains_unread_mention && m->contains_unread_mention) {
     m->contains_unread_mention = false;
     if (d->unread_mention_count == 0) {
       LOG_IF(ERROR, d->message_count_by_index[search_messages_filter_index(SearchMessagesFilter::UnreadMention)] != -1)
-          << "Unread mention count of " << d->dialog_id << " became negative";
+          << "Unread mention count of " << d->dialog_id << " became negative from " << source;
     } else {
       d->unread_mention_count--;
       d->message_count_by_index[search_messages_filter_index(SearchMessagesFilter::UnreadMention)] =
@@ -5332,7 +5377,7 @@ bool MessagesManager::update_message_contains_unread_mention(Dialog *d, Message 
       on_dialog_updated(d->dialog_id, "update_message_contains_unread_mention");
     }
     LOG(INFO) << "Update unread mention message count in " << d->dialog_id << " to " << d->unread_mention_count
-              << " by reading " << m->message_id;
+              << " by reading " << m->message_id << " from " << source;
 
     send_closure(G()->td(), &Td::send_update,
                  make_tl_object<td_api::updateMessageMentionRead>(d->dialog_id.get(), m->message_id.get(),
@@ -5381,7 +5426,8 @@ void MessagesManager::on_update_channel_max_unavailable_message_id(ChannelId cha
     LOG(ERROR) << "Receive wrong max_unavailable_message_id: " << max_unavailable_message_id;
     max_unavailable_message_id = MessageId();
   }
-  set_dialog_max_unavailable_message_id(dialog_id, max_unavailable_message_id, true);
+  set_dialog_max_unavailable_message_id(dialog_id, max_unavailable_message_id, true,
+                                        "on_update_channel_max_unavailable_message_id");
 }
 
 void MessagesManager::add_pending_channel_update(DialogId dialog_id, tl_object_ptr<telegram_api::Update> &&update,
@@ -5483,7 +5529,7 @@ void MessagesManager::add_pending_channel_update(DialogId dialog_id, tl_object_p
 
   if (d == nullptr || pts_count > 0) {
     process_channel_update(std::move(update));
-    CHECK(!running_get_channel_difference(dialog_id));
+    CHECK(!running_get_channel_difference(dialog_id)) << '"' << active_get_channel_differencies_[dialog_id] << '"';
   } else {
     LOG_IF(INFO, update->get_id() != dummyUpdate::ID)
         << "Skip useless channel update from " << source << ": " << to_string(update);
@@ -5709,6 +5755,7 @@ bool MessagesManager::update_notification_settings(NotificationSettingsScope sco
         scope != NOTIFICATION_SETTINGS_FOR_ALL_CHATS) {
       DialogId dialog_id(scope);
       CHECK(dialog_id.is_valid());
+      CHECK(have_dialog(dialog_id)) << "Wrong " << dialog_id << " in update_notification_settings";
       on_dialog_updated(dialog_id, "update_notification_settings");
     } else {
       string key = get_notification_settings_scope_database_key(scope);
@@ -6269,16 +6316,18 @@ void MessagesManager::after_get_difference() {
     }
   }
 
-  // TODO move to AnimationsManager
-  td_->animations_manager_->get_saved_animations(Auto());
+  if (td_->is_online()) {
+    // TODO move to AnimationsManager
+    td_->animations_manager_->get_saved_animations(Auto());
 
-  // TODO move to StickersManager
-  td_->stickers_manager_->get_installed_sticker_sets(false, Auto());
-  td_->stickers_manager_->get_installed_sticker_sets(true, Auto());
-  td_->stickers_manager_->get_featured_sticker_sets(Auto());
-  td_->stickers_manager_->get_recent_stickers(false, Auto());
-  td_->stickers_manager_->get_recent_stickers(true, Auto());
-  td_->stickers_manager_->get_favorite_stickers(Auto());
+    // TODO move to StickersManager
+    td_->stickers_manager_->get_installed_sticker_sets(false, Auto());
+    td_->stickers_manager_->get_installed_sticker_sets(true, Auto());
+    td_->stickers_manager_->get_featured_sticker_sets(Auto());
+    td_->stickers_manager_->get_recent_stickers(false, Auto());
+    td_->stickers_manager_->get_recent_stickers(true, Auto());
+    td_->stickers_manager_->get_favorite_stickers(Auto());
+  }
 
   load_notification_settings();
 
@@ -6434,7 +6483,10 @@ void MessagesManager::on_get_history(DialogId dialog_id, MessageId from_message_
       }
       is_dialog_updated = true;
     } else {
-      CHECK(d->last_new_message_id.is_valid());
+      CHECK(d->last_new_message_id.is_valid())
+          << dialog_id << " " << from_the_end << " " << d->first_database_message_id << " "
+          << d->last_database_message_id << " " << first_added_message_id << " " << last_added_message_id << " "
+          << d->last_message_id;
       CHECK(d->first_database_message_id.is_valid());
       {
         MessagesConstIterator it(d, d->first_database_message_id);
@@ -6482,23 +6534,49 @@ void MessagesManager::on_get_history(DialogId dialog_id, MessageId from_message_
   }
 }
 
-void MessagesManager::on_get_public_dialogs_search_result(const string &query,
-                                                          vector<tl_object_ptr<telegram_api::Peer>> &&peers) {
+vector<DialogId> MessagesManager::get_peers_dialog_ids(vector<tl_object_ptr<telegram_api::Peer>> &&peers) {
   vector<DialogId> result;
   result.reserve(peers.size());
   for (auto &peer : peers) {
     DialogId dialog_id(peer);
     if (dialog_id.is_valid()) {
-      force_create_dialog(dialog_id, "public dialogs search");
+      force_create_dialog(dialog_id, "get_peers_dialog_ids");
       result.push_back(dialog_id);
     }
   }
-
-  found_public_dialogs_[query] = std::move(result);
+  return result;
 }
 
-void MessagesManager::on_failed_public_dialogs_search(const string &query) {
-  found_public_dialogs_[query];  // negative cache
+void MessagesManager::on_get_public_dialogs_search_result(const string &query,
+                                                          vector<tl_object_ptr<telegram_api::Peer>> &&my_peers,
+                                                          vector<tl_object_ptr<telegram_api::Peer>> &&peers) {
+  auto it = search_public_dialogs_queries_.find(query);
+  CHECK(it != search_public_dialogs_queries_.end());
+  CHECK(it->second.size() > 0);
+  auto promises = std::move(it->second);
+  search_public_dialogs_queries_.erase(it);
+
+  found_public_dialogs_[query] = get_peers_dialog_ids(std::move(peers));
+  found_on_server_dialogs_[query] = get_peers_dialog_ids(std::move(my_peers));
+
+  for (auto &promise : promises) {
+    promise.set_value(Unit());
+  }
+}
+
+void MessagesManager::on_failed_public_dialogs_search(const string &query, Status &&error) {
+  auto it = search_public_dialogs_queries_.find(query);
+  CHECK(it != search_public_dialogs_queries_.end());
+  CHECK(it->second.size() > 0);
+  auto promises = std::move(it->second);
+  search_public_dialogs_queries_.erase(it);
+
+  found_public_dialogs_[query];     // negative cache
+  found_on_server_dialogs_[query];  // negative cache
+
+  for (auto &promise : promises) {
+    promise.set_error(error.clone());
+  }
 }
 
 void MessagesManager::on_get_dialog_messages_search_result(DialogId dialog_id, const string &query,
@@ -6632,7 +6710,14 @@ void MessagesManager::on_get_dialog_messages_search_result(DialogId dialog_id, c
   it->second.first = total_count;
 }
 
-void MessagesManager::on_failed_dialog_messages_search(int64 random_id) {
+void MessagesManager::on_failed_dialog_messages_search(DialogId dialog_id, int64 random_id) {
+  if (!dialog_id.is_valid()) {
+    auto it = found_call_messages_.find(random_id);
+    CHECK(it != found_call_messages_.end());
+    found_call_messages_.erase(it);
+    return;
+  }
+
   auto it = found_dialog_messages_.find(random_id);
   CHECK(it != found_dialog_messages_.end());
   found_dialog_messages_.erase(it);
@@ -6825,31 +6910,32 @@ string MessagesManager::get_search_text(const Message *m) {
     case MessageText::ID: {
       auto *text = static_cast<const MessageText *>(m->content.get());
       if (!text->web_page_id.is_valid()) {
-        return text->text;
+        return text->text.text;
       }
-      return PSTRING() << text->text << " " << td_->web_pages_manager_->get_web_page_search_text(text->web_page_id);
+      return PSTRING() << text->text.text << " "
+                       << td_->web_pages_manager_->get_web_page_search_text(text->web_page_id);
     }
     case MessageAnimation::ID: {
       auto animation = static_cast<const MessageAnimation *>(m->content.get());
       return PSTRING() << td_->animations_manager_->get_animation_search_text(animation->file_id) << " "
-                       << animation->caption;
+                       << animation->caption.text;
     }
     case MessageAudio::ID: {
       auto audio = static_cast<const MessageAudio *>(m->content.get());
-      return PSTRING() << td_->audios_manager_->get_audio_search_text(audio->file_id) << " " << audio->caption;
+      return PSTRING() << td_->audios_manager_->get_audio_search_text(audio->file_id) << " " << audio->caption.text;
     }
     case MessageDocument::ID: {
       auto document = static_cast<const MessageDocument *>(m->content.get());
       return PSTRING() << td_->documents_manager_->get_document_search_text(document->file_id) << " "
-                       << document->caption;
+                       << document->caption.text;
     }
     case MessagePhoto::ID: {
       auto photo = static_cast<const MessagePhoto *>(m->content.get());
-      return PSTRING() << photo->caption;
+      return PSTRING() << photo->caption.text;
     }
     case MessageVideo::ID: {
       auto video = static_cast<const MessageVideo *>(m->content.get());
-      return PSTRING() << td_->videos_manager_->get_video_search_text(video->file_id) << " " << video->caption;
+      return PSTRING() << td_->videos_manager_->get_video_search_text(video->file_id) << " " << video->caption.text;
     }
     case MessageContact::ID:
     case MessageGame::ID:
@@ -7254,7 +7340,7 @@ void MessagesManager::delete_dialog_history(DialogId dialog_id, bool remove_from
     return;
   }
 
-  set_dialog_max_unavailable_message_id(dialog_id, last_new_message_id, false);
+  set_dialog_max_unavailable_message_id(dialog_id, last_new_message_id, false, "delete_dialog_history");
 
   delete_dialog_history_from_server(dialog_id, last_new_message_id, remove_from_dialog_list, allow_error, 0,
                                     std::move(promise));
@@ -7539,10 +7625,15 @@ void MessagesManager::unload_dialog(DialogId dialog_id) {
     unloaded_message_ids.push_back(message_id.get());
   }
 
-  if (!unloaded_message_ids.empty() && !G()->parameters().use_message_db) {
-    d->have_full_history = false;
+  if (!unloaded_message_ids.empty()) {
+    if (!G()->parameters().use_message_db) {
+      d->have_full_history = false;
+    }
+
+    send_closure_later(
+        G()->td(), &Td::send_update,
+        make_tl_object<td_api::updateDeleteMessages>(dialog_id.get(), std::move(unloaded_message_ids), false, true));
   }
-  send_update_delete_messages(dialog_id, std::move(unloaded_message_ids), false, true);
 
   if (left_to_unload > 0) {
     LOG(INFO) << "Need to unload " << left_to_unload << " messages more in " << dialog_id;
@@ -7675,7 +7766,7 @@ void MessagesManager::read_all_dialog_mentions(DialogId dialog_id, Promise<Unit>
     send_closure(G()->td(), &Td::send_update,
                  make_tl_object<td_api::updateMessageMentionRead>(dialog_id.get(), m->message_id.get(), 0));
     is_update_sent = true;
-    add_message_to_database(d, m, "read_all_mentions");
+    on_message_changed(d, m, "read_all_mentions");
   }
 
   if (d->unread_mention_count != 0) {
@@ -7742,7 +7833,7 @@ void MessagesManager::read_message_content_from_updates(MessageId message_id) {
   if (d != nullptr) {
     Message *m = get_message(d, message_id);
     CHECK(m != nullptr);
-    read_message_content(d, m, false);
+    read_message_content(d, m, false, "read_message_content_from_updates");
   }
 }
 
@@ -7754,7 +7845,7 @@ void MessagesManager::read_channel_message_content_from_updates(Dialog *d, Messa
 
   Message *m = get_message_force(d, message_id);
   if (m != nullptr) {
-    read_message_content(d, m, false);
+    read_message_content(d, m, false, "read_channel_message_content_from_updates");
   }
 }
 
@@ -7781,12 +7872,13 @@ bool MessagesManager::update_opened_message_content(Message *m) {
   }
 }
 
-bool MessagesManager::read_message_content(Dialog *d, Message *m, bool is_local_read) {
-  bool is_mention_read = update_message_contains_unread_mention(d, m, false);
+bool MessagesManager::read_message_content(Dialog *d, Message *m, bool is_local_read, const char *source) {
+  CHECK(m != nullptr) << source;
+  bool is_mention_read = update_message_contains_unread_mention(d, m, false, "read_message_content");
   bool is_content_read = update_opened_message_content(m) | ttl_on_open(d, m, Time::now(), is_local_read);
 
   if (is_mention_read || is_content_read) {
-    add_message_to_database(d, m, "read_message_content");
+    on_message_changed(d, m, "read_message_content");
     if (is_content_read) {
       send_closure(G()->td(), &Td::send_update,
                    make_tl_object<td_api::updateMessageContentOpened>(d->dialog_id.get(), m->message_id.get()));
@@ -7954,12 +8046,12 @@ void MessagesManager::set_dialog_last_read_outbox_message_id(Dialog *d, MessageI
 }
 
 void MessagesManager::set_dialog_max_unavailable_message_id(DialogId dialog_id, MessageId max_unavailable_message_id,
-                                                            bool from_update) {
+                                                            bool from_update, const char *source) {
   Dialog *d = get_dialog_force(dialog_id);
   if (d != nullptr) {
     if (d->last_new_message_id.is_valid() && max_unavailable_message_id.get() > d->last_new_message_id.get()) {
-      LOG(ERROR) << "Tried to set dialog max unavailable message id to " << max_unavailable_message_id
-                 << ", but last new message id is " << d->last_new_message_id;
+      LOG(ERROR) << "Tried to set dialog max unavailable message id to " << max_unavailable_message_id << " from "
+                 << source << ", but last new message id is " << d->last_new_message_id;
       max_unavailable_message_id = d->last_new_message_id;
     }
 
@@ -7968,10 +8060,12 @@ void MessagesManager::set_dialog_max_unavailable_message_id(DialogId dialog_id, 
     }
 
     if (max_unavailable_message_id.is_valid() && max_unavailable_message_id.is_yet_unsent()) {
-      LOG(ERROR) << "Try to update " << dialog_id << " last read outbox message with " << max_unavailable_message_id;
+      LOG(ERROR) << "Try to update " << dialog_id << " last read outbox message with " << max_unavailable_message_id
+                 << " from " << source;
       return;
     }
-    LOG(INFO) << "Set min available message id to " << max_unavailable_message_id << " in " << dialog_id;
+    LOG(INFO) << "Set min available message id to " << max_unavailable_message_id << " in " << dialog_id << " from "
+              << source;
 
     on_dialog_updated(dialog_id, "set_dialog_max_unavailable_message_id");
 
@@ -8012,7 +8106,7 @@ void MessagesManager::set_dialog_max_unavailable_message_id(DialogId dialog_id, 
       read_history_inbox(dialog_id, max_unavailable_message_id, -1, "set_dialog_max_unavailable_message_id");
     }
   } else {
-    LOG(INFO) << "Receive min available message identifier in unknown " << dialog_id;
+    LOG(INFO) << "Receive min available message identifier in unknown " << dialog_id << " from " << source;
   }
 }
 
@@ -8022,11 +8116,13 @@ tl_object_ptr<td_api::MessageContent> MessagesManager::get_message_content_objec
     case MessageAnimation::ID: {
       const MessageAnimation *m = static_cast<const MessageAnimation *>(content);
       return make_tl_object<td_api::messageAnimation>(
-          td_->animations_manager_->get_animation_object(m->file_id, "get_message_content_object"), m->caption);
+          td_->animations_manager_->get_animation_object(m->file_id, "get_message_content_object"),
+          get_formatted_text_object(m->caption));
     }
     case MessageAudio::ID: {
       const MessageAudio *m = static_cast<const MessageAudio *>(content);
-      return make_tl_object<td_api::messageAudio>(td_->audios_manager_->get_audio_object(m->file_id), m->caption);
+      return make_tl_object<td_api::messageAudio>(td_->audios_manager_->get_audio_object(m->file_id),
+                                                  get_formatted_text_object(m->caption));
     }
     case MessageContact::ID: {
       const MessageContact *m = static_cast<const MessageContact *>(content);
@@ -8035,7 +8131,7 @@ tl_object_ptr<td_api::MessageContent> MessagesManager::get_message_content_objec
     case MessageDocument::ID: {
       const MessageDocument *m = static_cast<const MessageDocument *>(content);
       return make_tl_object<td_api::messageDocument>(td_->documents_manager_->get_document_object(m->file_id),
-                                                     m->caption);
+                                                     get_formatted_text_object(m->caption));
     }
     case MessageGame::ID: {
       const MessageGame *m = static_cast<const MessageGame *>(content);
@@ -8058,7 +8154,8 @@ tl_object_ptr<td_api::MessageContent> MessagesManager::get_message_content_objec
     }
     case MessagePhoto::ID: {
       const MessagePhoto *m = static_cast<const MessagePhoto *>(content);
-      return make_tl_object<td_api::messagePhoto>(get_photo_object(td_->file_manager_.get(), &m->photo), m->caption);
+      return make_tl_object<td_api::messagePhoto>(get_photo_object(td_->file_manager_.get(), &m->photo),
+                                                  get_formatted_text_object(m->caption));
     }
     case MessageSticker::ID: {
       const MessageSticker *m = static_cast<const MessageSticker *>(content);
@@ -8066,7 +8163,7 @@ tl_object_ptr<td_api::MessageContent> MessagesManager::get_message_content_objec
     }
     case MessageText::ID: {
       const MessageText *m = static_cast<const MessageText *>(content);
-      return make_tl_object<td_api::messageText>(m->text, get_text_entities_object(m->entities),
+      return make_tl_object<td_api::messageText>(get_formatted_text_object(m->text),
                                                  td_->web_pages_manager_->get_web_page_object(m->web_page_id));
     }
     case MessageUnsupported::ID: {
@@ -8078,7 +8175,8 @@ tl_object_ptr<td_api::MessageContent> MessagesManager::get_message_content_objec
     }
     case MessageVideo::ID: {
       const MessageVideo *m = static_cast<const MessageVideo *>(content);
-      return make_tl_object<td_api::messageVideo>(td_->videos_manager_->get_video_object(m->file_id), m->caption);
+      return make_tl_object<td_api::messageVideo>(td_->videos_manager_->get_video_object(m->file_id),
+                                                  get_formatted_text_object(m->caption));
     }
     case MessageVideoNote::ID: {
       const MessageVideoNote *m = static_cast<const MessageVideoNote *>(content);
@@ -8088,12 +8186,12 @@ tl_object_ptr<td_api::MessageContent> MessagesManager::get_message_content_objec
     case MessageVoiceNote::ID: {
       const MessageVoiceNote *m = static_cast<const MessageVoiceNote *>(content);
       return make_tl_object<td_api::messageVoiceNote>(td_->voice_notes_manager_->get_voice_note_object(m->file_id),
-                                                      m->caption, m->is_listened);
+                                                      get_formatted_text_object(m->caption), m->is_listened);
     }
     case MessageChatCreate::ID: {
       const MessageChatCreate *m = static_cast<const MessageChatCreate *>(content);
       return make_tl_object<td_api::messageBasicGroupChatCreate>(
-          m->title, ContactsManager::get_user_ids_object(m->participant_user_ids));
+          m->title, td_->contacts_manager_->get_user_ids_object(m->participant_user_ids));
     }
     case MessageChatChangeTitle::ID: {
       const MessageChatChangeTitle *m = static_cast<const MessageChatChangeTitle *>(content);
@@ -8109,17 +8207,19 @@ tl_object_ptr<td_api::MessageContent> MessagesManager::get_message_content_objec
       return make_tl_object<td_api::messageUnsupported>();
     case MessageChatAddUsers::ID: {
       const MessageChatAddUsers *m = static_cast<const MessageChatAddUsers *>(content);
-      return make_tl_object<td_api::messageChatAddMembers>(ContactsManager::get_user_ids_object(m->user_ids));
+      return make_tl_object<td_api::messageChatAddMembers>(td_->contacts_manager_->get_user_ids_object(m->user_ids));
     }
     case MessageChatJoinedByLink::ID:
       return make_tl_object<td_api::messageChatJoinByLink>();
     case MessageChatDeleteUser::ID: {
       const MessageChatDeleteUser *m = static_cast<const MessageChatDeleteUser *>(content);
-      return make_tl_object<td_api::messageChatDeleteMember>(m->user_id.get());
+      return make_tl_object<td_api::messageChatDeleteMember>(
+          td_->contacts_manager_->get_user_id_object(m->user_id, "messageChatDeleteMember"));
     }
     case MessageChatMigrateTo::ID: {
       const MessageChatMigrateTo *m = static_cast<const MessageChatMigrateTo *>(content);
-      return make_tl_object<td_api::messageChatUpgradeTo>(m->migrated_to_channel_id.get());
+      return make_tl_object<td_api::messageChatUpgradeTo>(
+          td_->contacts_manager_->get_supergroup_id_object(m->migrated_to_channel_id, "messageChatUpgradeTo"));
     }
     case MessageChannelCreate::ID: {
       const MessageChannelCreate *m = static_cast<const MessageChannelCreate *>(content);
@@ -8127,7 +8227,9 @@ tl_object_ptr<td_api::MessageContent> MessagesManager::get_message_content_objec
     }
     case MessageChannelMigrateFrom::ID: {
       const MessageChannelMigrateFrom *m = static_cast<const MessageChannelMigrateFrom *>(content);
-      return make_tl_object<td_api::messageChatUpgradeFrom>(m->title, m->migrated_from_chat_id.get());
+      return make_tl_object<td_api::messageChatUpgradeFrom>(
+          m->title,
+          td_->contacts_manager_->get_basic_group_id_object(m->migrated_from_chat_id, "messageChatUpgradeFrom"));
     }
     case MessagePinMessage::ID: {
       const MessagePinMessage *m = static_cast<const MessagePinMessage *>(content);
@@ -8297,7 +8399,7 @@ void MessagesManager::ttl_on_view(const Dialog *d, Message *message, double view
       message->ttl > 0 && message->ttl_expires_at == 0) {
     message->ttl_expires_at = message->ttl + view_date;
     ttl_register_message(d->dialog_id, message, now);
-    add_message_to_database(d, message, "ttl_on_view");
+    on_message_changed(d, message, "ttl_on_view");
   }
 }
 
@@ -8355,7 +8457,7 @@ void MessagesManager::ttl_loop(double now) {
       auto m = get_message(d, full_message_id.get_message_id());
       CHECK(m != nullptr);
       on_message_ttl_expired(d, m);
-      add_message_to_database(d, m, "ttl_loop");
+      on_message_changed(d, m, "ttl_loop");
     }
   }
   for (auto &it : to_delete) {
@@ -8552,7 +8654,7 @@ void MessagesManager::start_up() {
         m->random_y = get_random_y(message_id);
         m->message_id = message_id;
         m->date = G()->unix_time();
-        m->content = make_unique<MessageText>("text", vector<MessageEntity>(), WebPageId());
+        m->content = make_unique<MessageText>(FormattedText{"text", vector<MessageEntity>()}, WebPageId());
 
         m->have_previous = have_previous;
         m->have_next = have_next;
@@ -8708,7 +8810,7 @@ void MessagesManager::on_send_secret_message_success(int64 random_id, MessageId 
 
       new_file_id = td_->file_manager_->register_remote(
           FullRemoteFileLocation(FileType::Encrypted, file->id_, file->access_hash_, DcId::internal(file->dc_id_)),
-          owner_dialog_id, 0, 0);
+          FileLocationSource::FromServer, owner_dialog_id, 0, 0);
     }
   }
 
@@ -8809,7 +8911,7 @@ void MessagesManager::open_secret_message(SecretChatId secret_chat_id, int64 ran
     return;
   }
 
-  read_message_content(d, m, false);
+  read_message_content(d, m, false, "open_secret_message");
 }
 
 void MessagesManager::on_get_secret_message(SecretChatId secret_chat_id, UserId user_id, MessageId message_id,
@@ -8971,7 +9073,19 @@ void MessagesManager::add_secret_message(unique_ptr<PendingSecretMessage> pendin
 }
 
 void MessagesManager::finish_add_secret_message(unique_ptr<PendingSecretMessage> pending_secret_message) {
-  on_get_message(std::move(pending_secret_message->message_info), true, false, true, true, "finish add secret message");
+  auto d = get_dialog(pending_secret_message->message_info.dialog_id);
+  CHECK(d != nullptr);
+  auto random_id = pending_secret_message->message_info.random_id;
+  auto message_id = get_message_id_by_random_id(d, random_id);
+  if (message_id.is_valid()) {
+    if (message_id != pending_secret_message->message_info.message_id) {
+      LOG(WARNING) << "Ignore duplicate " << pending_secret_message->message_info.message_id
+                   << " received earlier with " << message_id << " and random_id " << random_id;
+    }
+  } else {
+    on_get_message(std::move(pending_secret_message->message_info), true, false, true, true,
+                   "finish add secret message");
+  }
   pending_secret_message->success_promise.set_value(Unit());  // TODO: set after message is saved
 }
 
@@ -9035,9 +9149,11 @@ MessagesManager::MessageInfo MessagesManager::parse_telegram_api_message(
       if (is_message_auto_read(message_info.dialog_id, (message->flags_ & MESSAGE_FLAG_IS_OUT) != 0, true)) {
         is_content_read = true;
       }
-      message_info.content =
-          get_message_content(std::move(message->message_), std::move(message->media_), std::move(message->entities_),
-                              message_info.dialog_id, is_content_read, message_info.via_bot_user_id, &message_info.ttl);
+      message_info.content = get_message_content(
+          get_message_text(std::move(message->message_), std::move(message->entities_),
+                           message_info.forward_header ? message_info.forward_header->date_ : message_info.date),
+          std::move(message->media_), message_info.dialog_id, is_content_read, message_info.via_bot_user_id,
+          &message_info.ttl);
       message_info.reply_markup =
           message->flags_ & MESSAGE_FLAG_HAS_REPLY_MARKUP ? std::move(message->reply_markup_) : nullptr;
       message_info.author_signature = std::move(message->post_author_);
@@ -9338,7 +9454,7 @@ FullMessageId MessagesManager::on_get_message(MessageInfo &&message_info, bool f
   }
 
   if (need_update && m->reply_markup != nullptr && m->reply_markup->type != ReplyMarkup::Type::InlineKeyboard &&
-      !td_->auth_manager_->is_bot()) {
+      m->reply_markup->is_personal && !td_->auth_manager_->is_bot()) {
     set_dialog_reply_markup(d, message_id);
   }
 
@@ -9488,11 +9604,13 @@ void MessagesManager::set_dialog_is_empty(Dialog *d, const char *source) {
 }
 
 void MessagesManager::set_dialog_is_pinned(Dialog *d, bool is_pinned) {
+  CHECK(d != nullptr);
   bool was_pinned = d->pinned_order != DEFAULT_ORDER;
   d->pinned_order = is_pinned ? get_next_pinned_dialog_order() : DEFAULT_ORDER;
   on_dialog_updated(d->dialog_id, "set_dialog_is_pinned");
 
   if (is_pinned != was_pinned) {
+    CHECK(d == get_dialog(d->dialog_id)) << "Wrong " << d->dialog_id << " in set_dialog_is_pinned";
     update_dialog_pos(d, false, "set_dialog_is_pinned", false);
     DialogDate dialog_date(d->order, d->dialog_id);
     send_closure(G()->td(), &Td::send_update,
@@ -9509,6 +9627,7 @@ void MessagesManager::set_dialog_reply_markup(Dialog *d, MessageId message_id) {
   d->need_restore_reply_markup = false;
 
   if (d->reply_markup_message_id.is_valid() || message_id.is_valid()) {
+    CHECK(d == get_dialog(d->dialog_id)) << "Wrong " << d->dialog_id << " in set_dialog_reply_markup";
     d->reply_markup_message_id = message_id;
     send_closure(G()->td(), &Td::send_update,
                  make_tl_object<td_api::updateChatReplyMarkup>(d->dialog_id.get(), message_id.get()));
@@ -9523,7 +9642,8 @@ void MessagesManager::try_restore_dialog_reply_markup(Dialog *d, const Message *
   if (m->had_reply_markup) {
     LOG(INFO) << "Restore deleted reply markup in " << d->dialog_id;
     set_dialog_reply_markup(d, MessageId());
-  } else if (m->reply_markup != nullptr && m->reply_markup->type != ReplyMarkup::Type::InlineKeyboard) {
+  } else if (m->reply_markup != nullptr && m->reply_markup->type != ReplyMarkup::Type::InlineKeyboard &&
+             m->reply_markup->is_personal) {
     LOG(INFO) << "Restore reply markup in " << d->dialog_id << " to " << m->message_id;
     set_dialog_reply_markup(d, m->message_id);
   }
@@ -9558,8 +9678,9 @@ void MessagesManager::on_update_sent_text_message(int64 random_id,
   }
   auto message_text = static_cast<const MessageText *>(m->content.get());
 
-  auto new_content = get_message_content(message_text->text, std::move(message_media), std::move(entities), dialog_id,
-                                         true /*likely ignored*/, UserId() /*likely ignored*/, nullptr /*ignored*/);
+  auto new_content = get_message_content(
+      get_message_text(message_text->text.text, std::move(entities), m->forward_info ? m->forward_info->date : m->date),
+      std::move(message_media), dialog_id, true /*likely ignored*/, UserId() /*likely ignored*/, nullptr /*ignored*/);
   if (new_content->get_id() != MessageText::ID) {
     LOG(ERROR) << "Text message content has changed to " << new_content->get_id();
     return;
@@ -9569,7 +9690,7 @@ void MessagesManager::on_update_sent_text_message(int64 random_id,
   bool need_update = false;
   bool is_content_changed = false;
 
-  if (message_text->entities != new_message_text->entities) {
+  if (message_text->text.entities != new_message_text->text.entities) {
     is_content_changed = true;
     need_update = true;
   }
@@ -9617,9 +9738,7 @@ void MessagesManager::on_update_message_web_page(FullMessageId full_message_id, 
     content->web_page_id = WebPageId();
     // don't need to send an update
 
-    if (!message_id.is_yet_unsent()) {
-      add_message_to_database(d, message, "on_update_message_web_page");
-    }
+    on_message_changed(d, message, "on_update_message_web_page");
     return;
   }
 
@@ -9781,7 +9900,8 @@ void MessagesManager::on_get_dialogs(vector<tl_object_ptr<telegram_api::dialog>>
       dialog->unread_mentions_count_ = 0;
     }
 
-    need_update_dialog_pos |= update_dialog_draft_message(d, get_draft_message(std::move(dialog->draft_)), true, false);
+    need_update_dialog_pos |= update_dialog_draft_message(
+        d, get_draft_message(td_->contacts_manager_.get(), std::move(dialog->draft_)), true, false);
     if (is_new) {
       bool has_pts = (dialog->flags_ & DIALOG_FLAG_HAS_PTS) != 0;
       if (last_message_id.is_valid()) {
@@ -9932,14 +10052,13 @@ bool MessagesManager::is_message_unload_enabled() const {
 }
 
 bool MessagesManager::can_unload_message(const Dialog *d, const Message *m) const {
-  // don't want to unload messages from opened dialogs and messages with resolved public links
+  // don't want to unload messages from opened dialogs
   // don't want to unload messages to which there are replies in yet unsent messages
   // don't want to unload messages with pending web pages
   // can't unload from memory last dialog, last database messages, yet unsent messages and active live locations
   FullMessageId full_message_id{d->dialog_id, m->message_id};
   return !d->is_opened && m->message_id != d->last_message_id && m->message_id != d->last_database_message_id &&
-         !m->message_id.is_yet_unsent() && m->public_link.empty() &&
-         active_live_location_full_message_ids_.count(full_message_id) == 0 &&
+         !m->message_id.is_yet_unsent() && active_live_location_full_message_ids_.count(full_message_id) == 0 &&
          replied_by_yet_unsent_messages_.count(full_message_id) == 0 &&
          waiting_for_web_page_messages_.count(full_message_id) == 0;
 }
@@ -10175,6 +10294,8 @@ unique_ptr<MessagesManager::Message> MessagesManager::do_delete_message(Dialog *
       // nothing to do
       break;
     case DialogType::SecretChat:
+      LOG(INFO) << "Delete correspondence random_id " << result->random_id << " to " << message_id << " in "
+                << d->dialog_id;
       d->random_id_to_message_id.erase(result->random_id);
       break;
     case DialogType::None:
@@ -10219,6 +10340,7 @@ void MessagesManager::do_delete_all_dialog_messages(Dialog *d, unique_ptr<Messag
       // nothing to do
       break;
     case DialogType::SecretChat:
+      LOG(INFO) << "Delete correspondence random_id " << m->random_id << " to " << message_id << " in " << d->dialog_id;
       d->random_id_to_message_id.erase(m->random_id);
       break;
     case DialogType::None:
@@ -10501,9 +10623,19 @@ vector<DialogId> MessagesManager::search_public_dialogs(const string &query, Pro
     return it->second;
   }
 
-  // TODO MultiPromise
-  td_->create_handler<SearchPublicDialogsQuery>(std::move(promise))->send(query);
+  send_search_public_dialogs_query(query, std::move(promise));
   return vector<DialogId>();
+}
+
+void MessagesManager::send_search_public_dialogs_query(const string &query, Promise<Unit> &&promise) {
+  auto &promises = search_public_dialogs_queries_[query];
+  promises.push_back(std::move(promise));
+  if (promises.size() != 1) {
+    // query has already been sent, just wait for the result
+    return;
+  }
+
+  td_->create_handler<SearchPublicDialogsQuery>()->send(query);
 }
 
 std::pair<size_t, vector<DialogId>> MessagesManager::search_dialogs(const string &query, int32 limit,
@@ -10534,6 +10666,47 @@ std::pair<size_t, vector<DialogId>> MessagesManager::search_dialogs(const string
 
   promise.set_value(Unit());
   return {result.first, std::move(dialog_ids)};
+}
+
+vector<DialogId> MessagesManager::sort_dialogs_by_order(const vector<DialogId> &dialog_ids, int32 limit) const {
+  auto dialog_dates = transform(dialog_ids, [this](auto dialog_id) {
+    const Dialog *d = this->get_dialog(dialog_id);
+    CHECK(d != nullptr);
+    return DialogDate(d->order, dialog_id);
+  });
+  if (static_cast<size_t>(limit) >= dialog_dates.size()) {
+    std::sort(dialog_dates.begin(), dialog_dates.end());
+  } else {
+    std::partial_sort(dialog_dates.begin(), dialog_dates.begin() + limit, dialog_dates.end());
+    dialog_dates.resize(limit, MAX_DIALOG_DATE);
+  }
+  return transform(dialog_dates, [](auto dialog_date) { return dialog_date.get_dialog_id(); });
+}
+
+vector<DialogId> MessagesManager::search_dialogs_on_server(const string &query, int32 limit, Promise<Unit> &&promise) {
+  LOG(INFO) << "Search chats on server with query \"" << query << "\" and limit " << limit;
+
+  if (limit < 0) {
+    promise.set_error(Status::Error(400, "Limit must be non-negative"));
+    return {};
+  }
+  if (limit > MAX_GET_DIALOGS) {
+    limit = MAX_GET_DIALOGS;
+  }
+
+  if (query.empty()) {
+    promise.set_value(Unit());
+    return {};
+  }
+
+  auto it = found_on_server_dialogs_.find(query);
+  if (it != found_on_server_dialogs_.end()) {
+    promise.set_value(Unit());
+    return sort_dialogs_by_order(it->second, limit);
+  }
+
+  send_search_public_dialogs_query(query, std::move(promise));
+  return vector<DialogId>();
 }
 
 vector<DialogId> MessagesManager::get_common_dialogs(UserId user_id, DialogId offset_dialog_id, int32 limit, bool force,
@@ -10848,51 +11021,51 @@ bool MessagesManager::is_message_edited_recently(FullMessageId full_message_id, 
   return m->edit_date >= G()->unix_time() - seconds;
 }
 
-string MessagesManager::get_public_message_link(FullMessageId full_message_id, Promise<Unit> &&promise) {
+std::pair<string, string> MessagesManager::get_public_message_link(FullMessageId full_message_id, bool for_group,
+                                                                   Promise<Unit> &&promise) {
   auto dialog_id = full_message_id.get_dialog_id();
   auto d = get_dialog_force(dialog_id);
   if (d == nullptr) {
     promise.set_error(Status::Error(6, "Chat not found"));
-    return string();
+    return {};
   }
   if (!have_input_peer(dialog_id, AccessRights::Read)) {
     promise.set_error(Status::Error(6, "Can't access the chat"));
-    return string();
+    return {};
   }
   if (dialog_id.get_type() != DialogType::Channel ||
       td_->contacts_manager_->get_channel_username(dialog_id.get_channel_id()).empty()) {
     promise.set_error(Status::Error(
         6, "Public message links are available only for messages in public supergroups and channel chats"));
-    return string();
+    return {};
   }
 
   auto message_id = full_message_id.get_message_id();
   auto message = get_message_force(d, message_id);
   if (message == nullptr) {
     promise.set_error(Status::Error(6, "Message not found"));
-    return string();
+    return {};
   }
   if (!message_id.is_server()) {
     promise.set_error(Status::Error(6, "Message is local"));
-    return string();
+    return {};
   }
 
-  if (message->public_link.empty()) {
+  auto it = public_message_links_[for_group].find(full_message_id);
+  if (it == public_message_links_[for_group].end()) {
     td_->create_handler<ExportChannelMessageLinkQuery>(std::move(promise))
-        ->send(dialog_id.get_channel_id(), message_id);
-    return string();
+        ->send(dialog_id.get_channel_id(), message_id, for_group);
+    return {};
   }
 
   promise.set_value(Unit());
-  return message->public_link;
+  return it->second;
 }
 
-void MessagesManager::on_get_public_message_link(FullMessageId full_message_id, string url) {
-  LOG_IF(ERROR, url.empty()) << "Receive empty public link for " << full_message_id;
-  auto message = get_message_force(full_message_id);
-  if (message != nullptr) {
-    message->public_link = std::move(url);
-  }
+void MessagesManager::on_get_public_message_link(FullMessageId full_message_id, bool for_group, string url,
+                                                 string html) {
+  LOG_IF(ERROR, url.empty() && html.empty()) << "Receive empty public link for " << full_message_id;
+  public_message_links_[for_group][full_message_id] = {std::move(url), std::move(html)};
 }
 
 Status MessagesManager::delete_dialog_reply_markup(DialogId dialog_id, MessageId message_id) {
@@ -10925,9 +11098,7 @@ Status MessagesManager::delete_dialog_reply_markup(DialogId dialog_id, MessageId
       message->reply_markup->is_personal = false;
       set_dialog_reply_markup(d, message_id);
 
-      if (!message_id.is_yet_unsent()) {
-        add_message_to_database(d, message, "delete_dialog_reply_markup");
-      }
+      on_message_changed(d, message, "delete_dialog_reply_markup");
     }
   } else {
     // non-bots can't have messages with RemoveKeyboard
@@ -10979,7 +11150,7 @@ Status MessagesManager::set_dialog_draft_message(DialogId dialog_id,
       new_draft_message->input_message_text = std::move(message_content);
     }
 
-    if (!new_draft_message->reply_to_message_id.is_valid() && new_draft_message->input_message_text.text.empty()) {
+    if (!new_draft_message->reply_to_message_id.is_valid() && new_draft_message->input_message_text.text.text.empty()) {
       new_draft_message = nullptr;
     }
   }
@@ -11269,20 +11440,22 @@ Status MessagesManager::set_dialog_client_data(DialogId dialog_id, string &&clie
   return Status::OK();
 }
 
-void MessagesManager::create_dialog(DialogId dialog_id, Promise<Unit> &&promise) {
+void MessagesManager::create_dialog(DialogId dialog_id, bool force, Promise<Unit> &&promise) {
   if (!have_input_peer(dialog_id, AccessRights::Read)) {
-    if (!have_dialog_info(dialog_id)) {
+    if (!have_dialog_info_force(dialog_id)) {
       return promise.set_error(Status::Error(6, "Chat info not found"));
     }
-    return promise.set_error(Status::Error(6, "Can't access the chat"));
+    if (!have_input_peer(dialog_id, AccessRights::Read)) {
+      return promise.set_error(Status::Error(6, "Can't access the chat"));
+    }
   }
 
-  if (td_->auth_manager_->is_bot() || dialog_id.get_type() == DialogType::SecretChat) {
+  if (force || td_->auth_manager_->is_bot() || dialog_id.get_type() == DialogType::SecretChat) {
     force_create_dialog(dialog_id, "create dialog");
   } else {
     const Dialog *d = get_dialog_force(dialog_id);
     if (d == nullptr || !d->notification_settings.is_synchronized) {
-      return get_dialog_query(dialog_id, std::move(promise));
+      return send_get_dialog_query(dialog_id, std::move(promise));
     }
   }
 
@@ -11510,10 +11683,10 @@ Status MessagesManager::view_messages(DialogId dialog_id, const vector<MessageId
       if (need_read) {
         auto message_content_type = message->content->get_id();
         if (message_content_type != MessageVoiceNote::ID && message_content_type != MessageVideoNote::ID &&
-            update_message_contains_unread_mention(d, message, false)) {
+            update_message_contains_unread_mention(d, message, false, "view_messages")) {
           CHECK(message_id.is_server());
           read_content_message_ids.push_back(message_id);
-          add_message_to_database(d, message, "view_messages");
+          on_message_changed(d, message, "view_messages");
         }
       }
     }
@@ -11581,7 +11754,7 @@ Status MessagesManager::open_message_content(FullMessageId full_message_id) {
     return Status::OK();
   }
 
-  if (read_message_content(d, message, true) &&
+  if (read_message_content(d, message, true, "open_message_content") &&
       (message_id.is_server() || dialog_id.get_type() == DialogType::SecretChat)) {
     read_message_contents_on_server(dialog_id, {message_id}, 0);
   }
@@ -11743,9 +11916,9 @@ void MessagesManager::close_dialog(Dialog *d) {
 
 tl_object_ptr<td_api::inputMessageText> MessagesManager::get_input_message_text_object(
     const InputMessageText &input_message_text) const {
-  return make_tl_object<td_api::inputMessageText>(input_message_text.text, input_message_text.disable_web_page_preview,
-                                                  input_message_text.clear_draft,
-                                                  get_text_entities_object(input_message_text.entities), nullptr);
+  return make_tl_object<td_api::inputMessageText>(get_formatted_text_object(input_message_text.text),
+                                                  input_message_text.disable_web_page_preview,
+                                                  input_message_text.clear_draft);
 }
 
 tl_object_ptr<td_api::draftMessage> MessagesManager::get_draft_message_object(
@@ -11760,18 +11933,24 @@ tl_object_ptr<td_api::draftMessage> MessagesManager::get_draft_message_object(
 tl_object_ptr<td_api::ChatType> MessagesManager::get_chat_type_object(DialogId dialog_id) const {
   switch (dialog_id.get_type()) {
     case DialogType::User:
-      return make_tl_object<td_api::chatTypePrivate>(dialog_id.get_user_id().get());
+      return make_tl_object<td_api::chatTypePrivate>(
+          td_->contacts_manager_->get_user_id_object(dialog_id.get_user_id(), "chatTypePrivate"));
     case DialogType::Chat:
-      return make_tl_object<td_api::chatTypeBasicGroup>(dialog_id.get_chat_id().get());
+      return make_tl_object<td_api::chatTypeBasicGroup>(
+          td_->contacts_manager_->get_basic_group_id_object(dialog_id.get_chat_id(), "chatTypeBasicGroup"));
     case DialogType::Channel: {
       auto channel_id = dialog_id.get_channel_id();
       auto channel_type = td_->contacts_manager_->get_channel_type(channel_id);
-      return make_tl_object<td_api::chatTypeSupergroup>(channel_id.get(), channel_type != ChannelType::Megagroup);
+      return make_tl_object<td_api::chatTypeSupergroup>(
+          td_->contacts_manager_->get_supergroup_id_object(channel_id, "chatTypeSupergroup"),
+          channel_type != ChannelType::Megagroup);
     }
     case DialogType::SecretChat: {
       auto secret_chat_id = dialog_id.get_secret_chat_id();
       auto user_id = td_->contacts_manager_->get_secret_chat_user_id(secret_chat_id);
-      return make_tl_object<td_api::chatTypeSecret>(secret_chat_id.get(), user_id.get());
+      return make_tl_object<td_api::chatTypeSecret>(
+          td_->contacts_manager_->get_secret_chat_id_object(secret_chat_id, "chatTypeSecret"),
+          td_->contacts_manager_->get_user_id_object(user_id, "chatTypeSecret"));
     }
     case DialogType::None:
     default:
@@ -11790,7 +11969,7 @@ tl_object_ptr<td_api::chat> MessagesManager::get_chat_object(const Dialog *d) {
     if (!d->notification_settings.is_synchronized && d->dialog_id.get_type() != DialogType::SecretChat &&
         have_input_peer(d->dialog_id, AccessRights::Read)) {
       // asynchronously get dialog from the server
-      get_dialog_query(d->dialog_id, Auto());
+      send_get_dialog_query(d->dialog_id, Auto());
     }
   }
 
@@ -11995,7 +12174,7 @@ void MessagesManager::reset_all_notification_settings() {
 }
 
 unique_ptr<DraftMessage> MessagesManager::get_draft_message(
-    tl_object_ptr<telegram_api::DraftMessage> &&draft_message_ptr) {
+    ContactsManager *contacts_manager, tl_object_ptr<telegram_api::DraftMessage> &&draft_message_ptr) {
   if (draft_message_ptr == nullptr) {
     return nullptr;
   }
@@ -12016,8 +12195,8 @@ unique_ptr<DraftMessage> MessagesManager::get_draft_message(
         }
       }
 
-      auto entities = get_message_entities(std::move(draft->entities_));
-      auto status = fix_text_message(draft->message_, entities, nullptr, true, true, true, true);
+      auto entities = get_message_entities(contacts_manager, std::move(draft->entities_));
+      auto status = fix_text_message(draft->message_, entities, true, true, true, true);
       if (status.is_error()) {
         LOG(ERROR) << "Receive error " << status << " while parsing draft " << draft->message_;
         if (!clean_input_string(draft->message_)) {
@@ -12025,10 +12204,9 @@ unique_ptr<DraftMessage> MessagesManager::get_draft_message(
         }
         entities.clear();
       }
-      result->input_message_text.text = std::move(draft->message_);
+      result->input_message_text.text = FormattedText{std::move(draft->message_), std::move(entities)};
       result->input_message_text.disable_web_page_preview = (flags & SEND_MESSAGE_FLAG_DISABLE_WEB_PAGE_PREVIEW) != 0;
       result->input_message_text.clear_draft = false;
-      result->input_message_text.entities = std::move(entities);
 
       return result;
     }
@@ -13330,12 +13508,14 @@ tl_object_ptr<td_api::message> MessagesManager::get_message_object(DialogId dial
     }
   }
   return make_tl_object<td_api::message>(
-      message->message_id.get(), message->sender_user_id.get(), dialog_id.get(), std::move(sending_state), is_outgoing,
-      can_edit_message(dialog_id, message, false, true), can_forward_message(dialog_id, message), can_delete_for_self,
-      can_delete_for_all_users, message->is_channel_post, message->contains_unread_mention, message->date,
-      message->edit_date, get_message_forward_info_object(message->forward_info), message->reply_to_message_id.get(),
-      message->ttl, message->ttl_expires_at != 0 ? std::max(message->ttl_expires_at - Time::now(), 1e-3) : message->ttl,
-      message->via_bot_user_id.get(), message->author_signature, message->views, message->media_album_id,
+      message->message_id.get(), td_->contacts_manager_->get_user_id_object(message->sender_user_id, "sender_user_id"),
+      dialog_id.get(), std::move(sending_state), is_outgoing, can_edit_message(dialog_id, message, false, true),
+      can_forward_message(dialog_id, message), can_delete_for_self, can_delete_for_all_users, message->is_channel_post,
+      message->contains_unread_mention, message->date, message->edit_date,
+      get_message_forward_info_object(message->forward_info), message->reply_to_message_id.get(), message->ttl,
+      message->ttl_expires_at != 0 ? std::max(message->ttl_expires_at - Time::now(), 1e-3) : message->ttl,
+      td_->contacts_manager_->get_user_id_object(message->via_bot_user_id, "via_bot_user_id"),
+      message->author_signature, message->views, message->media_album_id,
       get_message_content_object(message->content.get()), get_reply_markup_object(message->reply_markup));
 }
 
@@ -13363,32 +13543,33 @@ tl_object_ptr<td_api::messages> MessagesManager::get_messages_object(
   return td_api::make_object<td_api::messages>(total_count, std::move(messages));
 }
 
-// like clean_input_string but also validates entities
-Status MessagesManager::fix_text_message(string &text, vector<MessageEntity> &entities,
-                                         tl_object_ptr<td_api::TextParseMode> &&parse_mode, bool allow_empty,
-                                         bool skip_new_entities, bool skip_bot_commands, bool for_draft) {
-  if (!check_utf8(text)) {
-    return Status::Error(400, "Message text must be encoded in UTF-8");
+bool MessagesManager::need_skip_bot_commands(DialogId dialog_id, bool is_bot) const {
+  if (is_bot) {
+    return false;
   }
 
-  if (parse_mode != nullptr) {
-    Result<vector<MessageEntity>> r_entities;
-    switch (parse_mode->get_id()) {
-      case td_api::textParseModeHTML::ID:
-        r_entities = parse_html(text);
-        break;
-      case td_api::textParseModeMarkdown::ID:
-        r_entities = parse_markdown(text);
-        break;
-      default:
-        UNREACHABLE();
-        break;
+  switch (dialog_id.get_type()) {
+    case DialogType::User:
+      return !td_->contacts_manager_->is_user_bot(dialog_id.get_user_id());
+    case DialogType::SecretChat: {
+      auto user_id = td_->contacts_manager_->get_secret_chat_user_id(dialog_id.get_secret_chat_id());
+      return !td_->contacts_manager_->is_user_bot(user_id);
     }
-    if (r_entities.is_error()) {
-      return Status::Error(400, PSLICE() << "Can't parse entities in message text: " << r_entities.error().message());
-    } else {
-      entities = r_entities.move_as_ok();
-    }
+    case DialogType::Chat:
+    case DialogType::Channel:
+    case DialogType::None:
+      return false;
+    default:
+      UNREACHABLE();
+      return false;
+  }
+}
+
+// like clean_input_string but also validates entities
+Status MessagesManager::fix_text_message(string &text, vector<MessageEntity> &entities, bool allow_empty,
+                                         bool skip_new_entities, bool skip_bot_commands, bool for_draft) {
+  if (!check_utf8(text)) {
+    return Status::Error(400, "Strings must be encoded in UTF-8");
   }
 
   fix_entities(entities);
@@ -13595,9 +13776,20 @@ Status MessagesManager::fix_text_message(string &text, vector<MessageEntity> &en
     }
   }
 
-  // TODO MAX_MESSAGE_LENGTH
+  // TODO MAX_MESSAGE_LENGTH and MAX_CAPTION_LENGTH
 
   return Status::OK();
+}
+
+Result<FormattedText> MessagesManager::process_input_caption(DialogId dialog_id,
+                                                             tl_object_ptr<td_api::formattedText> &&text,
+                                                             bool is_bot) const {
+  if (text == nullptr) {
+    return FormattedText{};
+  }
+  TRY_RESULT(entities, get_message_entities(td_->contacts_manager_.get(), std::move(text->entities_)));
+  TRY_STATUS(fix_text_message(text->text_, entities, true, false, need_skip_bot_commands(dialog_id, is_bot), false));
+  return FormattedText{std::move(text->text_), std::move(entities)};
 }
 
 Result<InputMessageText> MessagesManager::process_input_message_text(
@@ -13606,98 +13798,21 @@ Result<InputMessageText> MessagesManager::process_input_message_text(
   CHECK(input_message_content != nullptr);
   CHECK(input_message_content->get_id() == td_api::inputMessageText::ID);
   auto input_message_text = static_cast<td_api::inputMessageText *>(input_message_content.get());
-
-  vector<MessageEntity> entities;
-  for (auto &entity : input_message_text->entities_) {
-    if (entity == nullptr || entity->type_ == nullptr) {
-      continue;
+  if (input_message_text->text_ == nullptr) {
+    if (for_draft) {
+      return InputMessageText{FormattedText{}, input_message_text->disable_web_page_preview_,
+                              input_message_text->clear_draft_};
     }
 
-    switch (entity->type_->get_id()) {
-      case td_api::textEntityTypeMention::ID:
-        return Status::Error(400, "EntityMention can't be used in outgoing messages");
-      case td_api::textEntityTypeHashtag::ID:
-        return Status::Error(400, "EntityHashtag can't be used in outgoing messages");
-      case td_api::textEntityTypeBotCommand::ID:
-        return Status::Error(400, "EntityBotCommand can't be used in outgoing messages");
-      case td_api::textEntityTypeUrl::ID:
-        return Status::Error(400, "EntityUrl can't be used in outgoing messages");
-      case td_api::textEntityTypeEmailAddress::ID:
-        return Status::Error(400, "EntityEmailAddress can't be used in outgoing messages");
-      case td_api::textEntityTypeBold::ID:
-        entities.emplace_back(MessageEntity::Type::Bold, entity->offset_, entity->length_);
-        break;
-      case td_api::textEntityTypeItalic::ID:
-        entities.emplace_back(MessageEntity::Type::Italic, entity->offset_, entity->length_);
-        break;
-      case td_api::textEntityTypeCode::ID:
-        entities.emplace_back(MessageEntity::Type::Code, entity->offset_, entity->length_);
-        break;
-      case td_api::textEntityTypePre::ID:
-        entities.emplace_back(MessageEntity::Type::Pre, entity->offset_, entity->length_);
-        break;
-      case td_api::textEntityTypePreCode::ID: {
-        auto entity_pre_code = static_cast<td_api::textEntityTypePreCode *>(entity->type_.get());
-        if (!clean_input_string(entity_pre_code->language_)) {
-          return Status::Error(400, "MessageEntityPreCode.language must be encoded in UTF-8");
-        }
-        entities.emplace_back(MessageEntity::Type::PreCode, entity->offset_, entity->length_,
-                              entity_pre_code->language_);
-        break;
-      }
-      case td_api::textEntityTypeTextUrl::ID: {
-        auto entity_text_url = static_cast<td_api::textEntityTypeTextUrl *>(entity->type_.get());
-        if (!clean_input_string(entity_text_url->url_)) {
-          return Status::Error(400, "MessageEntityTextUrl.url must be encoded in UTF-8");
-        }
-        auto r_http_url = parse_url(entity_text_url->url_);
-        if (r_http_url.is_error()) {
-          return Status::Error(400, PSTRING() << "Wrong message entity: " << r_http_url.error().message());
-        }
-        entities.emplace_back(MessageEntity::Type::TextUrl, entity->offset_, entity->length_,
-                              r_http_url.ok().get_url());
-        break;
-      }
-      case td_api::textEntityTypeMentionName::ID: {
-        auto entity_mention_name = static_cast<td_api::textEntityTypeMentionName *>(entity->type_.get());
-        UserId user_id(entity_mention_name->user_id_);
-        if (!td_->contacts_manager_->have_input_user(user_id)) {
-          return Status::Error(7, "Have no access to the user");
-        }
-        entities.emplace_back(entity->offset_, entity->length_, user_id);
-        break;
-      }
-      default:
-        UNREACHABLE();
-    }
+    return Status::Error(400, "Message text can't be empty");
   }
 
-  bool skip_bot_commands = false;
-  if (!is_bot) {
-    switch (dialog_id.get_type()) {
-      case DialogType::User:
-        if (!td_->contacts_manager_->is_user_bot(dialog_id.get_user_id())) {
-          skip_bot_commands = true;
-        }
-        break;
-      case DialogType::Chat:
-        break;
-      case DialogType::Channel:
-        break;
-      case DialogType::SecretChat:
-        skip_bot_commands = true;
-        break;
-      case DialogType::None:
-        break;
-      default:
-        UNREACHABLE();
-    }
-  }
-  TRY_STATUS(fix_text_message(input_message_text->text_, entities, std::move(input_message_text->parse_mode_),
-                              for_draft, false, skip_bot_commands, for_draft));
-
-  return InputMessageText{std::move(input_message_text->text_), input_message_text->disable_web_page_preview_,
-                          input_message_text->clear_draft_, std::move(entities)};
+  TRY_RESULT(entities,
+             get_message_entities(td_->contacts_manager_.get(), std::move(input_message_text->text_->entities_)));
+  TRY_STATUS(fix_text_message(input_message_text->text_->text_, entities, for_draft, false,
+                              need_skip_bot_commands(dialog_id, is_bot), for_draft));
+  return InputMessageText{FormattedText{std::move(input_message_text->text_->text_), std::move(entities)},
+                          input_message_text->disable_web_page_preview_, input_message_text->clear_draft_};
 }
 
 Result<std::pair<Location, int32>> MessagesManager::process_input_message_location(
@@ -13798,12 +13913,12 @@ SecretInputMedia MessagesManager::get_secret_input_media(const MessageContent *c
   switch (content->get_id()) {
     case MessageAnimation::ID: {
       auto m = static_cast<const MessageAnimation *>(content);
-      return td_->animations_manager_->get_secret_input_media(m->file_id, std::move(input_file), m->caption,
+      return td_->animations_manager_->get_secret_input_media(m->file_id, std::move(input_file), m->caption.text,
                                                               std::move(thumbnail));
     }
     case MessageAudio::ID: {
       auto m = static_cast<const MessageAudio *>(content);
-      return td_->audios_manager_->get_secret_input_media(m->file_id, std::move(input_file), m->caption,
+      return td_->audios_manager_->get_secret_input_media(m->file_id, std::move(input_file), m->caption.text,
                                                           std::move(thumbnail));
     }
     case MessageContact::ID: {
@@ -13812,7 +13927,7 @@ SecretInputMedia MessagesManager::get_secret_input_media(const MessageContent *c
     }
     case MessageDocument::ID: {
       auto m = static_cast<const MessageDocument *>(content);
-      return td_->documents_manager_->get_secret_input_media(m->file_id, std::move(input_file), m->caption,
+      return td_->documents_manager_->get_secret_input_media(m->file_id, std::move(input_file), m->caption.text,
                                                              std::move(thumbnail));
     }
     case MessageLocation::ID: {
@@ -13821,7 +13936,7 @@ SecretInputMedia MessagesManager::get_secret_input_media(const MessageContent *c
     }
     case MessagePhoto::ID: {
       auto m = static_cast<const MessagePhoto *>(content);
-      return photo_get_secret_input_media(td_->file_manager_.get(), m->photo, std::move(input_file), m->caption,
+      return photo_get_secret_input_media(td_->file_manager_.get(), m->photo, std::move(input_file), m->caption.text,
                                           std::move(thumbnail));
     }
     case MessageSticker::ID: {
@@ -13840,7 +13955,7 @@ SecretInputMedia MessagesManager::get_secret_input_media(const MessageContent *c
     }
     case MessageVideo::ID: {
       auto m = static_cast<const MessageVideo *>(content);
-      return td_->videos_manager_->get_secret_input_media(m->file_id, std::move(input_file), m->caption,
+      return td_->videos_manager_->get_secret_input_media(m->file_id, std::move(input_file), m->caption.text,
                                                           std::move(thumbnail));
     }
     case MessageVideoNote::ID: {
@@ -13850,7 +13965,7 @@ SecretInputMedia MessagesManager::get_secret_input_media(const MessageContent *c
     }
     case MessageVoiceNote::ID: {
       auto m = static_cast<const MessageVoiceNote *>(content);
-      return td_->voice_notes_manager_->get_secret_input_media(m->file_id, std::move(input_file), m->caption);
+      return td_->voice_notes_manager_->get_secret_input_media(m->file_id, std::move(input_file), m->caption.text);
     }
     case MessageLiveLocation::ID:
     case MessageGame::ID:
@@ -13971,13 +14086,11 @@ tl_object_ptr<telegram_api::InputMedia> MessagesManager::get_input_media(
   switch (content->get_id()) {
     case MessageAnimation::ID: {
       auto m = static_cast<const MessageAnimation *>(content);
-      return td_->animations_manager_->get_input_media(m->file_id, std::move(input_file), std::move(input_thumbnail),
-                                                       m->caption);
+      return td_->animations_manager_->get_input_media(m->file_id, std::move(input_file), std::move(input_thumbnail));
     }
     case MessageAudio::ID: {
       auto m = static_cast<const MessageAudio *>(content);
-      return td_->audios_manager_->get_input_media(m->file_id, std::move(input_file), std::move(input_thumbnail),
-                                                   m->caption);
+      return td_->audios_manager_->get_input_media(m->file_id, std::move(input_file), std::move(input_thumbnail));
     }
     case MessageContact::ID: {
       auto m = static_cast<const MessageContact *>(content);
@@ -13985,8 +14098,7 @@ tl_object_ptr<telegram_api::InputMedia> MessagesManager::get_input_media(
     }
     case MessageDocument::ID: {
       auto m = static_cast<const MessageDocument *>(content);
-      return td_->documents_manager_->get_input_media(m->file_id, std::move(input_file), std::move(input_thumbnail),
-                                                      m->caption);
+      return td_->documents_manager_->get_input_media(m->file_id, std::move(input_file), std::move(input_thumbnail));
     }
     case MessageGame::ID: {
       auto m = static_cast<const MessageGame *>(content);
@@ -14006,7 +14118,7 @@ tl_object_ptr<telegram_api::InputMedia> MessagesManager::get_input_media(
     }
     case MessagePhoto::ID: {
       auto m = static_cast<const MessagePhoto *>(content);
-      return photo_get_input_media(td_->file_manager_.get(), m->photo, std::move(input_file), m->caption, ttl);
+      return photo_get_input_media(td_->file_manager_.get(), m->photo, std::move(input_file), ttl);
     }
     case MessageSticker::ID: {
       auto m = static_cast<const MessageSticker *>(content);
@@ -14018,8 +14130,7 @@ tl_object_ptr<telegram_api::InputMedia> MessagesManager::get_input_media(
     }
     case MessageVideo::ID: {
       auto m = static_cast<const MessageVideo *>(content);
-      return td_->videos_manager_->get_input_media(m->file_id, std::move(input_file), std::move(input_thumbnail),
-                                                   m->caption, ttl);
+      return td_->videos_manager_->get_input_media(m->file_id, std::move(input_file), std::move(input_thumbnail), ttl);
     }
     case MessageVideoNote::ID: {
       auto m = static_cast<const MessageVideoNote *>(content);
@@ -14027,7 +14138,7 @@ tl_object_ptr<telegram_api::InputMedia> MessagesManager::get_input_media(
     }
     case MessageVoiceNote::ID: {
       auto m = static_cast<const MessageVoiceNote *>(content);
-      return td_->voice_notes_manager_->get_input_media(m->file_id, std::move(input_file), m->caption);
+      return td_->voice_notes_manager_->get_input_media(m->file_id, std::move(input_file));
     }
     case MessageText::ID:
     case MessageUnsupported::ID:
@@ -14441,6 +14552,25 @@ MessageId MessagesManager::get_reply_to_message_id(Dialog *d, MessageId message_
   return message_id;
 }
 
+FormattedText MessagesManager::get_message_content_caption(const MessageContent *content) {
+  switch (content->get_id()) {
+    case MessageAnimation::ID:
+      return static_cast<const MessageAnimation *>(content)->caption;
+    case MessageAudio::ID:
+      return static_cast<const MessageAudio *>(content)->caption;
+    case MessageDocument::ID:
+      return static_cast<const MessageDocument *>(content)->caption;
+    case MessagePhoto::ID:
+      return static_cast<const MessagePhoto *>(content)->caption;
+    case MessageVideo::ID:
+      return static_cast<const MessageVideo *>(content)->caption;
+    case MessageVoiceNote::ID:
+      return static_cast<const MessageVoiceNote *>(content)->caption;
+    default:
+      return FormattedText();
+  }
+}
+
 int32 MessagesManager::get_message_content_duration(const MessageContent *content) const {
   CHECK(content != nullptr);
   switch (content->get_id()) {
@@ -14679,8 +14809,10 @@ void MessagesManager::add_message_dependencies(Dependencies &dependencies, Dialo
   switch (m->content->get_id()) {
     case MessageText::ID: {
       auto content = static_cast<const MessageText *>(m->content.get());
-      for (auto &entity : content->entities) {
-        dependencies.user_ids.insert(entity.user_id);
+      for (auto &entity : content->text.entities) {
+        if (entity.user_id.is_valid()) {
+          dependencies.user_ids.insert(entity.user_id);
+        }
       }
       dependencies.web_page_ids.insert(content->web_page_id);
       break;
@@ -14829,6 +14961,7 @@ void MessagesManager::resolve_dependencies_force(const Dependencies &dependencie
   for (auto dialog_id : dependencies.dialog_ids) {
     if (dialog_id.is_valid() && !have_dialog_force(dialog_id)) {
       LOG(ERROR) << "Can't find " << dialog_id;
+      force_create_dialog(dialog_id, "resolve_dependencies_force");
     }
   }
   for (auto web_page_id : dependencies.web_page_ids) {
@@ -14903,6 +15036,7 @@ Result<MessageId> MessagesManager::send_message(DialogId dialog_id, MessageId re
     m->ttl = message_content.ttl;
   }
 
+  send_update_new_message(d, m, true);
   if (need_update_dialog_pos) {
     send_update_chat_last_message(d, "send_message");
   }
@@ -15052,10 +15186,10 @@ Result<MessagesManager::InputMessageContent> MessagesManager::process_input_mess
   unique_ptr<MessageContent> content;
   UserId via_bot_user_id;
   int32 ttl = 0;
+  bool is_bot = td_->auth_manager_->is_bot();
   switch (message_type) {
     case td_api::inputMessageText::ID: {
-      TRY_RESULT(input_message_text,
-                 process_input_message_text(dialog_id, std::move(input_message_content), td_->auth_manager_->is_bot()));
+      TRY_RESULT(input_message_text, process_input_message_text(dialog_id, std::move(input_message_content), is_bot));
       disable_web_page_preview = input_message_text.disable_web_page_preview;
       clear_draft = input_message_text.clear_draft;
 
@@ -15064,25 +15198,21 @@ Result<MessagesManager::InputMessageContent> MessagesManager::process_input_mess
           (dialog_id.get_type() != DialogType::Channel ||
            td_->contacts_manager_->get_channel_status(dialog_id.get_channel_id()).can_add_web_page_previews())) {
         web_page_id = td_->web_pages_manager_->get_web_page_by_url(
-            get_first_url(input_message_text.text, input_message_text.entities));
+            get_first_url(input_message_text.text.text, input_message_text.text.entities));
       }
-      content = make_unique<MessageText>(std::move(input_message_text.text), std::move(input_message_text.entities),
-                                         web_page_id);
+      content = make_unique<MessageText>(std::move(input_message_text.text), web_page_id);
       break;
     }
     case td_api::inputMessageAnimation::ID: {
       auto input_animation = static_cast<td_api::inputMessageAnimation *>(input_message_content.get());
 
-      if (!clean_input_string(input_animation->caption_)) {
-        return Status::Error(400, "Animation caption must be encoded in UTF-8");
-      }
+      TRY_RESULT(caption, process_input_caption(dialog_id, std::move(input_animation->caption_), is_bot));
 
       td_->animations_manager_->create_animation(
           file_id, thumbnail, std::move(file_name), std::move(mime_type), input_animation->duration_,
           get_dimensions(input_animation->width_, input_animation->height_), false);
 
-      content =
-          make_unique<MessageAnimation>(file_id, strip_empty_characters(input_animation->caption_, MAX_CAPTION_LENGTH));
+      content = make_unique<MessageAnimation>(file_id, std::move(caption));
       break;
     }
     case td_api::inputMessageAudio::ID: {
@@ -15094,36 +15224,29 @@ Result<MessagesManager::InputMessageContent> MessagesManager::process_input_mess
       if (!clean_input_string(input_audio->performer_)) {
         return Status::Error(400, "Audio performer must be encoded in UTF-8");
       }
-      if (!clean_input_string(input_audio->caption_)) {
-        return Status::Error(400, "Audio caption must be encoded in UTF-8");
-      }
+      TRY_RESULT(caption, process_input_caption(dialog_id, std::move(input_audio->caption_), is_bot));
 
       td_->audios_manager_->create_audio(file_id, thumbnail, std::move(file_name), std::move(mime_type),
                                          input_audio->duration_, std::move(input_audio->title_),
                                          std::move(input_audio->performer_), false);
 
-      content = make_unique<MessageAudio>(file_id, strip_empty_characters(input_audio->caption_, MAX_CAPTION_LENGTH));
+      content = make_unique<MessageAudio>(file_id, std::move(caption));
       break;
     }
     case td_api::inputMessageDocument::ID: {
       auto input_document = static_cast<td_api::inputMessageDocument *>(input_message_content.get());
 
-      if (!clean_input_string(input_document->caption_)) {
-        return Status::Error(400, "Document caption must be encoded in UTF-8");
-      }
+      TRY_RESULT(caption, process_input_caption(dialog_id, std::move(input_document->caption_), is_bot));
 
       td_->documents_manager_->create_document(file_id, thumbnail, std::move(file_name), std::move(mime_type), false);
 
-      content =
-          make_unique<MessageDocument>(file_id, strip_empty_characters(input_document->caption_, MAX_CAPTION_LENGTH));
+      content = make_unique<MessageDocument>(file_id, std::move(caption));
       break;
     }
     case td_api::inputMessagePhoto::ID: {
       auto input_photo = static_cast<td_api::inputMessagePhoto *>(input_message_content.get());
 
-      if (!clean_input_string(input_photo->caption_)) {
-        return Status::Error(400, "Photo caption must be encoded in UTF-8");
-      }
+      TRY_RESULT(caption, process_input_caption(dialog_id, std::move(input_photo->caption_), is_bot));
       if (input_photo->width_ < 0 || input_photo->width_ > 10000) {
         return Status::Error(400, "Wrong photo width");
       }
@@ -15154,7 +15277,7 @@ Result<MessagesManager::InputMessageContent> MessagesManager::process_input_mess
       message_photo->photo.has_stickers = !sticker_file_ids.empty();
       message_photo->photo.sticker_file_ids = std::move(sticker_file_ids);
 
-      message_photo->caption = strip_empty_characters(input_photo->caption_, MAX_CAPTION_LENGTH);
+      message_photo->caption = std::move(caption);
 
       content = std::move(message_photo);
       break;
@@ -15170,9 +15293,7 @@ Result<MessagesManager::InputMessageContent> MessagesManager::process_input_mess
     case td_api::inputMessageVideo::ID: {
       auto input_video = static_cast<td_api::inputMessageVideo *>(input_message_content.get());
 
-      if (!clean_input_string(input_video->caption_)) {
-        return Status::Error(400, "Video caption must be encoded in UTF-8");
-      }
+      TRY_RESULT(caption, process_input_caption(dialog_id, std::move(input_video->caption_), is_bot));
       ttl = input_video->ttl_;
 
       bool has_stickers = !sticker_file_ids.empty();
@@ -15180,7 +15301,7 @@ Result<MessagesManager::InputMessageContent> MessagesManager::process_input_mess
                                          std::move(file_name), std::move(mime_type), input_video->duration_,
                                          get_dimensions(input_video->width_, input_video->height_), false);
 
-      content = make_unique<MessageVideo>(file_id, strip_empty_characters(input_video->caption_, MAX_CAPTION_LENGTH));
+      content = make_unique<MessageVideo>(file_id, std::move(caption));
       break;
     }
     case td_api::inputMessageVideoNote::ID: {
@@ -15200,15 +15321,12 @@ Result<MessagesManager::InputMessageContent> MessagesManager::process_input_mess
     case td_api::inputMessageVoiceNote::ID: {
       auto input_voice_note = static_cast<td_api::inputMessageVoiceNote *>(input_message_content.get());
 
-      if (!clean_input_string(input_voice_note->caption_)) {
-        return Status::Error(400, "Voice note caption must be encoded in UTF-8");
-      }
+      TRY_RESULT(caption, process_input_caption(dialog_id, std::move(input_voice_note->caption_), is_bot));
 
       td_->voice_notes_manager_->create_voice_note(file_id, std::move(mime_type), input_voice_note->duration_,
                                                    std::move(input_voice_note->waveform_), false);
 
-      content = make_unique<MessageVoiceNote>(
-          file_id, strip_empty_characters(input_voice_note->caption_, MAX_CAPTION_LENGTH), false);
+      content = make_unique<MessageVoiceNote>(file_id, std::move(caption), false);
       break;
     }
     case td_api::inputMessageLocation::ID: {
@@ -15241,7 +15359,7 @@ Result<MessagesManager::InputMessageContent> MessagesManager::process_input_mess
       break;
     }
     case td_api::inputMessageInvoice::ID: {
-      if (!td_->auth_manager_->is_bot()) {
+      if (!is_bot) {
         return Status::Error(400, "Invoices can be sent only by bots");
       }
 
@@ -15412,6 +15530,8 @@ Result<vector<MessageId>> MessagesManager::send_message_group(
 
     save_send_message_logevent(dialog_id, m);
     do_send_message(dialog_id, m);
+
+    send_update_new_message(d, m, true);
   }
 
   if (need_update_dialog_pos) {
@@ -15457,15 +15577,16 @@ void MessagesManager::do_send_message(DialogId dialog_id, Message *m, vector<int
     if (is_secret) {
       auto layer = td_->contacts_manager_->get_secret_chat_layer(dialog_id.get_secret_chat_id());
       send_closure(td_->create_net_actor<SendSecretMessageActor>(), &SendSecretMessageActor::send, dialog_id,
-                   m->reply_to_random_id, m->ttl, message_text->text,
+                   m->reply_to_random_id, m->ttl, message_text->text.text,
                    get_secret_input_media(content, nullptr, BufferSlice(), layer),
-                   get_input_secret_message_entities(message_text->entities), m->via_bot_user_id, m->media_album_id,
-                   random_id);
+                   get_input_secret_message_entities(message_text->text.entities), m->via_bot_user_id,
+                   m->media_album_id, random_id);
     } else {
       send_closure(td_->create_net_actor<SendMessageActor>(), &SendMessageActor::send, get_message_flags(m), dialog_id,
                    m->reply_to_message_id, get_input_reply_markup(m->reply_markup),
-                   get_input_message_entities(td_->contacts_manager_.get(), message_text->entities), message_text->text,
-                   random_id, &m->send_query_ref, get_sequence_dispatcher_id(dialog_id, content_type));
+                   get_input_message_entities(td_->contacts_manager_.get(), message_text->text.entities),
+                   message_text->text.text, random_id, &m->send_query_ref,
+                   get_sequence_dispatcher_id(dialog_id, content_type));
     }
     return;
   }
@@ -15521,11 +15642,15 @@ void MessagesManager::on_message_media_uploaded(DialogId dialog_id, Message *m,
           auto m = result.move_as_ok();
           CHECK(m != nullptr);
           CHECK(input_media != nullptr);
+
+          auto caption = get_message_content_caption(m->content.get());
+
           LOG(INFO) << "Send media from " << m->message_id << " in " << dialog_id << " in reply to "
                     << m->reply_to_message_id;
           int64 random_id = begin_send_message(dialog_id, m);
           send_closure(td_->create_net_actor<SendMediaActor>(), &SendMediaActor::send, file_id, thumbnail_file_id,
                        get_message_flags(m), dialog_id, m->reply_to_message_id, get_input_reply_markup(m->reply_markup),
+                       get_input_message_entities(td_->contacts_manager_.get(), caption.entities), caption.text,
                        std::move(input_media), random_id, &m->send_query_ref,
                        get_sequence_dispatcher_id(dialog_id, m->content->get_id()));
         }));
@@ -15601,8 +15726,6 @@ void MessagesManager::on_secret_message_media_uploaded(DialogId dialog_id, Messa
 
 void MessagesManager::on_upload_message_media_success(DialogId dialog_id, MessageId message_id,
                                                       tl_object_ptr<telegram_api::MessageMedia> &&media) {
-  auto content = get_message_content(string(), std::move(media), Auto(), dialog_id, false, UserId(), nullptr);
-
   Dialog *d = get_dialog(dialog_id);
   CHECK(d != nullptr);
 
@@ -15619,6 +15742,9 @@ void MessagesManager::on_upload_message_media_success(DialogId dialog_id, Messag
   if (!have_input_peer(dialog_id, AccessRights::Read)) {
     return;  // the message should be deleted soon
   }
+
+  auto content = get_message_content(get_message_content_caption(m->content.get()), std::move(media), dialog_id, false,
+                                     UserId(), nullptr);
 
   update_message_content(dialog_id, m, m->content, std::move(content), true);
 
@@ -15741,7 +15867,7 @@ void MessagesManager::do_send_message_group(int64 media_album_id) {
   auto default_status = can_send_message(dialog_id);
   bool success = default_status.is_ok();
   vector<int64> random_ids;
-  vector<tl_object_ptr<telegram_api::InputMedia>> input_media;
+  vector<tl_object_ptr<telegram_api::inputSingleMedia>> input_single_media;
   MessageId reply_to_message_id;
   int32 flags = 0;
   for (size_t i = 0; i < request.message_ids.size(); i++) {
@@ -15749,7 +15875,6 @@ void MessagesManager::do_send_message_group(int64 media_album_id) {
     if (m == nullptr) {
       // skip deleted messages
       random_ids.push_back(0);
-      input_media.push_back(nullptr);
       continue;
     }
 
@@ -15757,7 +15882,16 @@ void MessagesManager::do_send_message_group(int64 media_album_id) {
     flags = get_message_flags(m);
 
     random_ids.push_back(begin_send_message(dialog_id, m));
-    input_media.push_back(get_input_media(m->content.get(), nullptr, nullptr, m->ttl));
+    auto caption = get_message_content_caption(m->content.get());
+    auto input_media = get_input_media(m->content.get(), nullptr, nullptr, m->ttl);
+    auto entities = get_input_message_entities(td_->contacts_manager_.get(), caption.entities);
+    int32 input_single_media_flags = 0;
+    if (!entities.empty()) {
+      input_single_media_flags |= telegram_api::inputSingleMedia::ENTITIES_MASK;
+    }
+
+    input_single_media.push_back(make_tl_object<telegram_api::inputSingleMedia>(
+        std::move(input_media), input_single_media_flags, random_ids.back(), caption.text, std::move(entities)));
     if (request.results[i].is_error()) {
       success = false;
     }
@@ -15780,15 +15914,6 @@ void MessagesManager::do_send_message_group(int64 media_album_id) {
   pending_message_group_sends_.erase(it);
 
   LOG(INFO) << "Begin to send media group " << media_album_id << " to " << dialog_id;
-
-  vector<tl_object_ptr<telegram_api::inputSingleMedia>> input_single_media;
-  for (size_t i = 0; i < random_ids.size(); i++) {
-    if (random_ids[i] != 0) {
-      CHECK(input_media[i] != nullptr);
-      input_single_media.push_back(
-          make_tl_object<telegram_api::inputSingleMedia>(std::move(input_media[i]), random_ids[i]));
-    }
-  }
 
   if (input_single_media.empty()) {
     LOG(INFO) << "Media group " << media_album_id << " from " << dialog_id << " is empty";
@@ -15822,7 +15947,7 @@ void MessagesManager::on_media_message_ready_to_send(DialogId dialog_id, Message
     }
     return;
   }
-  CHECK(!it->second);
+  CHECK(!it->second) << dialog_id << " " << message_id;
   it->second = std::move(promise);
 
   on_yet_unsent_media_queue_updated(dialog_id);
@@ -15928,11 +16053,12 @@ Result<MessageId> MessagesManager::send_bot_start_message(UserId bot_user_id, Di
   Message *m = get_message_to_send(
       d, MessageId(), false, false,
       make_unique<MessageText>(
-          text,
-          vector<MessageEntity>{MessageEntity(MessageEntity::Type::BotCommand, 0, narrow_cast<int32>(text.size()))},
+          FormattedText{text, vector<MessageEntity>{MessageEntity(MessageEntity::Type::BotCommand, 0,
+                                                                  narrow_cast<int32>(text.size()))}},
           WebPageId()),
       &need_update_dialog_pos);
 
+  send_update_new_message(d, m, true);
   if (need_update_dialog_pos) {
     send_update_chat_last_message(d, "send_bot_start_message");
   }
@@ -16065,6 +16191,7 @@ Result<MessageId> MessagesManager::send_inline_query_result_message(DialogId dia
 
   update_dialog_draft_message(d, nullptr, false, !need_update_dialog_pos);
 
+  send_update_new_message(d, m, true);
   if (need_update_dialog_pos) {
     send_update_chat_last_message(d, "send_inline_query_result_message");
   }
@@ -16336,8 +16463,8 @@ void MessagesManager::edit_message_text(FullMessageId full_message_id,
   }
 
   send_closure(td_->create_net_actor<EditMessageActor>(std::move(promise)), &EditMessageActor::send, flags, dialog_id,
-               message_id, input_message_text.text,
-               get_input_message_entities(td_->contacts_manager_.get(), input_message_text.entities), nullptr,
+               message_id, input_message_text.text.text,
+               get_input_message_entities(td_->contacts_manager_.get(), input_message_text.text.entities), nullptr,
                std::move(input_reply_markup), get_sequence_dispatcher_id(dialog_id, -1));
 }
 
@@ -16394,9 +16521,11 @@ void MessagesManager::edit_message_live_location(FullMessageId full_message_id,
 }
 
 void MessagesManager::edit_message_caption(FullMessageId full_message_id,
-                                           tl_object_ptr<td_api::ReplyMarkup> &&reply_markup, const string &caption,
+                                           tl_object_ptr<td_api::ReplyMarkup> &&reply_markup,
+                                           tl_object_ptr<td_api::formattedText> &&input_caption,
                                            Promise<Unit> &&promise) {
   LOG(INFO) << "Begin to edit caption of " << full_message_id;
+
   auto dialog_id = full_message_id.get_dialog_id();
   Dialog *d = get_dialog_force(dialog_id);
   if (d == nullptr) {
@@ -16462,6 +16591,12 @@ void MessagesManager::edit_message_caption(FullMessageId full_message_id,
       UNREACHABLE();
   }
 
+  auto r_caption = process_input_caption(dialog_id, std::move(input_caption), td_->auth_manager_->is_bot());
+  if (r_caption.is_error()) {
+    return promise.set_error(r_caption.move_as_error());
+  }
+  auto caption = r_caption.move_as_ok();
+
   auto r_new_reply_markup = get_reply_markup(std::move(reply_markup), td_->auth_manager_->is_bot(), true, false,
                                              !is_broadcast_channel(dialog_id));
   if (r_new_reply_markup.is_error()) {
@@ -16470,9 +16605,8 @@ void MessagesManager::edit_message_caption(FullMessageId full_message_id,
   auto input_reply_markup = get_input_reply_markup(r_new_reply_markup.ok());
 
   send_closure(td_->create_net_actor<EditMessageActor>(std::move(promise)), &EditMessageActor::send, 1 << 11, dialog_id,
-               message_id, strip_empty_characters(caption, MAX_CAPTION_LENGTH),
-               vector<tl_object_ptr<telegram_api::MessageEntity>>(), nullptr, std::move(input_reply_markup),
-               get_sequence_dispatcher_id(dialog_id, -1));
+               message_id, caption.text, get_input_message_entities(td_->contacts_manager_.get(), caption.entities),
+               nullptr, std::move(input_reply_markup), get_sequence_dispatcher_id(dialog_id, -1));
 }
 
 void MessagesManager::edit_message_reply_markup(FullMessageId full_message_id,
@@ -16552,8 +16686,8 @@ void MessagesManager::edit_inline_message_text(const string &inline_message_id,
     flags |= SEND_MESSAGE_FLAG_DISABLE_WEB_PAGE_PREVIEW;
   }
   td_->create_handler<EditInlineMessageQuery>(std::move(promise))
-      ->send(flags, std::move(input_bot_inline_message_id), input_message_text.text,
-             get_input_message_entities(td_->contacts_manager_.get(), input_message_text.entities), nullptr,
+      ->send(flags, std::move(input_bot_inline_message_id), input_message_text.text.text,
+             get_input_message_entities(td_->contacts_manager_.get(), input_message_text.text.entities), nullptr,
              get_input_reply_markup(r_new_reply_markup.ok()));
 }
 
@@ -16592,10 +16726,17 @@ void MessagesManager::edit_inline_message_live_location(const string &inline_mes
 
 void MessagesManager::edit_inline_message_caption(const string &inline_message_id,
                                                   tl_object_ptr<td_api::ReplyMarkup> &&reply_markup,
-                                                  const string &caption, Promise<Unit> &&promise) {
+                                                  tl_object_ptr<td_api::formattedText> &&input_caption,
+                                                  Promise<Unit> &&promise) {
   if (!td_->auth_manager_->is_bot()) {
     return promise.set_error(Status::Error(3, "Method is available only for bots"));
   }
+
+  auto r_caption = process_input_caption(DialogId(), std::move(input_caption), td_->auth_manager_->is_bot());
+  if (r_caption.is_error()) {
+    return promise.set_error(r_caption.move_as_error());
+  }
+  auto caption = r_caption.move_as_ok();
 
   auto r_new_reply_markup = get_reply_markup(std::move(reply_markup), td_->auth_manager_->is_bot(), true, false, true);
   if (r_new_reply_markup.is_error()) {
@@ -16608,8 +16749,8 @@ void MessagesManager::edit_inline_message_caption(const string &inline_message_i
   }
 
   td_->create_handler<EditInlineMessageQuery>(std::move(promise))
-      ->send(1 << 11, std::move(input_bot_inline_message_id), strip_empty_characters(caption, MAX_CAPTION_LENGTH),
-             vector<tl_object_ptr<telegram_api::MessageEntity>>(), nullptr,
+      ->send(1 << 11, std::move(input_bot_inline_message_id), caption.text,
+             get_input_message_entities(td_->contacts_manager_.get(), caption.entities), nullptr,
              get_input_reply_markup(r_new_reply_markup.ok()));
 }
 
@@ -16884,7 +17025,8 @@ void MessagesManager::on_get_game_high_scores(int64 random_id,
       LOG(ERROR) << "Receive wrong score = " << score;
       continue;
     }
-    result->scores_.push_back(make_tl_object<td_api::gameHighScore>(position, user_id.get(), score));
+    result->scores_.push_back(make_tl_object<td_api::gameHighScore>(
+        position, td_->contacts_manager_->get_user_id_object(user_id, "gameHighScore"), score));
   }
 }
 
@@ -16968,13 +17110,16 @@ unique_ptr<MessagesManager::MessageForwardInfo> MessagesManager::get_message_for
       sender_user_id = UserId();
     }
   }
+  if (from_dialog_id.is_valid()) {
+    force_create_dialog(from_dialog_id, "message forward from info");
+  }
 
   return make_unique<MessageForwardInfo>(sender_user_id, forward_header->date_, dialog_id, message_id, author_signature,
                                          from_dialog_id, from_message_id);
 }
 
 tl_object_ptr<td_api::MessageForwardInfo> MessagesManager::get_message_forward_info_object(
-    const unique_ptr<MessageForwardInfo> &forward_info) {
+    const unique_ptr<MessageForwardInfo> &forward_info) const {
   if (forward_info == nullptr) {
     return nullptr;
   }
@@ -16984,9 +17129,9 @@ tl_object_ptr<td_api::MessageForwardInfo> MessagesManager::get_message_forward_i
         forward_info->dialog_id.get(), forward_info->author_signature, forward_info->date,
         forward_info->message_id.get(), forward_info->from_dialog_id.get(), forward_info->from_message_id.get());
   }
-  return make_tl_object<td_api::messageForwardedFromUser>(forward_info->sender_user_id.get(), forward_info->date,
-                                                          forward_info->from_dialog_id.get(),
-                                                          forward_info->from_message_id.get());
+  return make_tl_object<td_api::messageForwardedFromUser>(
+      td_->contacts_manager_->get_user_id_object(forward_info->sender_user_id, "messageForwardedFromUser"),
+      forward_info->date, forward_info->from_dialog_id.get(), forward_info->from_message_id.get());
 }
 
 Result<unique_ptr<ReplyMarkup>> MessagesManager::get_dialog_reply_markup(
@@ -17213,7 +17358,7 @@ Result<vector<MessageId>> MessagesManager::forward_messages(DialogId to_dialog_i
 
     bool is_game = content_id == MessageGame::ID;
     unique_ptr<MessageForwardInfo> forward_info;
-    if (!is_game) {
+    if (!is_game && content_id != MessageAudio::ID) {
       DialogId saved_from_dialog_id;
       MessageId saved_from_message_id;
       if (to_dialog_id == DialogId(my_id)) {
@@ -17251,6 +17396,9 @@ Result<vector<MessageId>> MessagesManager::forward_messages(DialogId to_dialog_i
     m->via_bot_user_id = forwarded_message->via_bot_user_id;
     m->media_album_id = media_album_id;
     m->in_game_share = in_game_share;
+    if (forwarded_message->views > 0) {
+      m->views = forwarded_message->views;
+    }
 
     if (is_game) {
       if (m->via_bot_user_id == my_id) {
@@ -17263,6 +17411,8 @@ Result<vector<MessageId>> MessagesManager::forward_messages(DialogId to_dialog_i
     result[i] = m->message_id;
     forwarded_messages.push_back(m);
     forwarded_message_ids.push_back(message_id);
+
+    send_update_new_message(to_dialog, m, true);
   }
 
   if (!forwarded_messages.empty()) {
@@ -17281,6 +17431,8 @@ Result<vector<MessageId>> MessagesManager::forward_messages(DialogId to_dialog_i
       save_send_message_logevent(to_dialog_id, m);
       do_send_message(to_dialog_id, m);
       result[i] = m->message_id;
+
+      send_update_new_message(to_dialog, m, true);
     }
   }
 
@@ -17312,6 +17464,7 @@ Result<MessageId> MessagesManager::send_dialog_set_ttl_message(DialogId dialog_i
   Message *m =
       get_message_to_send(d, MessageId(), false, false, make_unique<MessageChatSetTtl>(ttl), &need_update_dialog_pos);
 
+  send_update_new_message(d, m, true);
   if (need_update_dialog_pos) {
     send_update_chat_last_message(d, "send_dialog_set_ttl_message");
   }
@@ -17346,7 +17499,7 @@ Status MessagesManager::send_screenshot_taken_notification_message(DialogId dial
 
     do_send_screenshot_taken_notification_message(dialog_id, m, 0);
 
-    send_update_new_message(d, m);
+    send_update_new_message(d, m, true);
     if (need_update_dialog_pos) {
       send_update_chat_last_message(d, "send_screenshot_taken_notification_message");
     }
@@ -17549,7 +17702,7 @@ void MessagesManager::send_update_new_message(Dialog *d, const Message *m, bool 
     auto promise = PromiseCreator::lambda([actor_id = actor_id(this), dialog_id = d->dialog_id](Result<Unit> result) {
       send_closure(actor_id, &MessagesManager::flush_pending_update_new_messages, dialog_id);
     });
-    get_dialog_query(settings_dialog_id, std::move(promise));  // TODO use GetNotifySettingsQuery when possible
+    send_get_dialog_query(settings_dialog_id, std::move(promise));  // TODO use GetNotifySettingsQuery when possible
     return;
   }
 
@@ -17607,6 +17760,7 @@ void MessagesManager::send_update_message_edited(DialogId dialog_id, const Messa
 void MessagesManager::send_update_delete_messages(DialogId dialog_id, vector<int64> &&message_ids, bool is_permanent,
                                                   bool from_cache) const {
   if (!message_ids.empty()) {
+    CHECK(have_dialog(dialog_id)) << "Wrong " << dialog_id << " in send_update_delete_messages";
     send_closure(G()->td(), &Td::send_update,
                  make_tl_object<td_api::updateDeleteMessages>(dialog_id.get(), std::move(message_ids), is_permanent,
                                                               from_cache));
@@ -17621,6 +17775,7 @@ void MessagesManager::send_update_chat(Dialog *d) {
 
 void MessagesManager::send_update_chat_draft_message(const Dialog *d) {
   CHECK(d != nullptr);
+  CHECK(d == get_dialog(d->dialog_id)) << "Wrong " << d->dialog_id << " in send_update_chat_draft_message";
   on_dialog_updated(d->dialog_id, "send_update_chat_draft_message");
   send_closure(G()->td(), &Td::send_update,
                make_tl_object<td_api::updateChatDraftMessage>(
@@ -17629,12 +17784,17 @@ void MessagesManager::send_update_chat_draft_message(const Dialog *d) {
 }
 
 void MessagesManager::send_update_chat_last_message(Dialog *d, const char *source) {
-  CHECK(d != nullptr);
   update_dialog_pos(d, false, source, false);
+  send_update_chat_last_message_impl(d, source);
+}
 
+void MessagesManager::send_update_chat_last_message_impl(const Dialog *d, const char *source) const {
+  CHECK(d != nullptr);
+  CHECK(d == get_dialog(d->dialog_id)) << "Wrong " << d->dialog_id << " in send_update_chat_last_message from "
+                                       << source;
   LOG(INFO) << "Send updateChatLastMessage in " << d->dialog_id << " to " << d->last_message_id << " from " << source;
   auto update = make_tl_object<td_api::updateChatLastMessage>(
-      d->dialog_id.get(), get_message_object(d->dialog_id, get_message_force(d, d->last_message_id)),
+      d->dialog_id.get(), get_message_object(d->dialog_id, get_message(d, d->last_message_id)),
       DialogDate(d->order, d->dialog_id) <= last_dialog_date_ ? d->order : 0);
   send_closure(G()->td(), &Td::send_update, std::move(update));
 }
@@ -17661,6 +17821,7 @@ void MessagesManager::send_update_chat_read_inbox(const Dialog *d, bool force, c
 void MessagesManager::send_update_chat_read_outbox(const Dialog *d) {
   CHECK(d != nullptr);
   if (!td_->auth_manager_->is_bot()) {
+    CHECK(d == get_dialog(d->dialog_id)) << "Wrong " << d->dialog_id << " in send_update_chat_read_outbox";
     on_dialog_updated(d->dialog_id, "send_update_chat_read_outbox");
     send_closure(
         G()->td(), &Td::send_update,
@@ -17671,6 +17832,7 @@ void MessagesManager::send_update_chat_read_outbox(const Dialog *d) {
 void MessagesManager::send_update_chat_unread_mention_count(const Dialog *d) {
   CHECK(d != nullptr);
   if (!td_->auth_manager_->is_bot()) {
+    CHECK(d == get_dialog(d->dialog_id)) << "Wrong " << d->dialog_id << " in send_update_chat_unread_mention_count";
     LOG(INFO) << "Update unread mention message count in " << d->dialog_id << " to " << d->unread_mention_count;
     on_dialog_updated(d->dialog_id, "send_update_chat_unread_mention_count");
     send_closure(G()->td(), &Td::send_update,
@@ -17979,6 +18141,8 @@ void MessagesManager::on_send_message_file_part_missing(int64 random_id, int bad
     } while (m->random_id == 0 || message_random_ids_.find(m->random_id) != message_random_ids_.end());
     message_random_ids_.insert(m->random_id);
 
+    LOG(INFO) << "Replace random_id from " << random_id << " to " << m->random_id << " in " << m->message_id << " in "
+              << dialog_id;
     d->random_id_to_message_id.erase(random_id);
     d->random_id_to_message_id[m->random_id] = m->message_id;
 
@@ -18152,7 +18316,8 @@ void MessagesManager::on_send_message_fail(int64 random_id, Status error) {
 MessageId MessagesManager::get_next_message_id(Dialog *d, int32 type) {
   CHECK(d != nullptr);
   int64 last = std::max({d->last_message_id.get(), d->last_new_message_id.get(), d->last_database_message_id.get(),
-                         d->last_assigned_message_id.get()});
+                         d->last_assigned_message_id.get(), d->last_clear_history_message_id.get(),
+                         d->deleted_last_message_id.get(), d->max_unavailable_message_id.get()});
   if (last < d->last_read_inbox_message_id.get() &&
       d->last_read_inbox_message_id.get() < d->last_new_message_id.get() + MessageId::FULL_TYPE_MASK) {
     last = d->last_read_inbox_message_id.get();
@@ -18196,7 +18361,8 @@ void MessagesManager::fail_send_message(FullMessageId full_message_id, int error
     // dump_debug_message_op(d, 5);
   }
 
-  message->message_id = MessageId(old_message_id.get() - MessageId::TYPE_YET_UNSENT + MessageId::TYPE_LOCAL);
+  auto new_message_id = MessageId(old_message_id.get() - MessageId::TYPE_YET_UNSENT + MessageId::TYPE_LOCAL);
+  message->message_id = new_message_id;
   CHECK(message->message_id.is_valid());
   message->random_y = get_random_y(message->message_id);
   message->is_failed_to_send = true;
@@ -18207,7 +18373,8 @@ void MessagesManager::fail_send_message(FullMessageId full_message_id, int error
   bool need_update = false;
   Message *m = add_message_to_dialog(dialog_id, std::move(message), false, &need_update, &need_update_dialog_pos,
                                      "fail_send_message");
-  CHECK(m != nullptr);
+  CHECK(m != nullptr) << "Failed to add failed to send " << new_message_id << " to " << dialog_id << " due to "
+                      << debug_add_message_to_dialog_fail_reason;
 
   LOG(INFO) << "Send updateMessageSendFailed for " << full_message_id;
   d->yet_unsent_message_id_to_persistent_message_id.emplace(old_message_id, m->message_id);
@@ -18230,7 +18397,7 @@ void MessagesManager::on_update_dialog_draft_message(DialogId dialog_id,
     LOG(INFO) << "Ignore update chat draft in unknown " << dialog_id;
     return;
   }
-  update_dialog_draft_message(d, get_draft_message(std::move(draft_message)), true, true);
+  update_dialog_draft_message(d, get_draft_message(td_->contacts_manager_.get(), std::move(draft_message)), true, true);
 }
 
 bool MessagesManager::update_dialog_draft_message(Dialog *d, unique_ptr<DraftMessage> &&draft_message, bool from_update,
@@ -18250,21 +18417,24 @@ bool MessagesManager::update_dialog_draft_message(Dialog *d, unique_ptr<DraftMes
       return true;
     }
   } else {
-    if (d->draft_message == nullptr || d->draft_message->date < draft_message->date) {
-      if (d->draft_message != nullptr && d->draft_message->reply_to_message_id == draft_message->reply_to_message_id &&
-          d->draft_message->input_message_text == draft_message->input_message_text) {
+    if (d->draft_message != nullptr && d->draft_message->reply_to_message_id == draft_message->reply_to_message_id &&
+        d->draft_message->input_message_text == draft_message->input_message_text) {
+      if (d->draft_message->date < draft_message->date) {
         if (need_update_dialog_pos) {
           update_dialog_pos(d, false, "update_dialog_draft_message 2");
         }
         d->draft_message->date = draft_message->date;
-      } else {
+        return true;
+      }
+    } else {
+      if (!from_update || d->draft_message == nullptr || d->draft_message->date <= draft_message->date) {
         d->draft_message = std::move(draft_message);
         if (need_update_dialog_pos) {
           update_dialog_pos(d, false, "update_dialog_draft_message 3", false);
         }
         send_update_chat_draft_message(d);
+        return true;
       }
-      return true;
     }
   }
   return false;
@@ -18415,7 +18585,7 @@ DialogId MessagesManager::search_public_dialog(const string &username_to_search,
       } else {
         const Dialog *d = get_dialog_force(dialog_id);
         if (d == nullptr || !d->notification_settings.is_synchronized) {
-          get_dialog_query(dialog_id, std::move(promise));
+          send_get_dialog_query(dialog_id, std::move(promise));
           return DialogId();
         }
       }
@@ -18436,7 +18606,7 @@ DialogId MessagesManager::search_public_dialog(const string &username_to_search,
   return DialogId();
 }
 
-void MessagesManager::get_dialog_query(DialogId dialog_id, Promise<Unit> &&promise) {
+void MessagesManager::send_get_dialog_query(DialogId dialog_id, Promise<Unit> &&promise) {
   if (td_->auth_manager_->is_bot()) {
     return;
   }
@@ -18537,7 +18707,7 @@ void MessagesManager::drop_username(const string &username) {
   auto dialog_id = it->second.dialog_id;
   if (have_input_peer(dialog_id, AccessRights::Read)) {
     CHECK(dialog_id.get_type() != DialogType::SecretChat);
-    get_dialog_query(dialog_id, Auto());
+    send_get_dialog_query(dialog_id, Auto());
   }
 
   resolved_usernames_.erase(it);
@@ -19083,11 +19253,12 @@ std::pair<int32, vector<DialogParticipant>> MessagesManager::search_dialog_parti
       return td_->contacts_manager_->get_channel_participants(
           dialog_id.get_channel_id(), td_api::make_object<td_api::supergroupMembersFilterSearch>(query), 0, limit,
           random_id, force, std::move(promise));
-    case DialogType::SecretChat:
+    case DialogType::SecretChat: {
       promise.set_value(Unit());
-      return search_private_chat_participants(
-          td_->contacts_manager_->get_my_id("search_dialog_participants"),
-          td_->contacts_manager_->get_secret_chat_user_id(dialog_id.get_secret_chat_id()), query, limit);
+      auto peer_user_id = td_->contacts_manager_->get_secret_chat_user_id(dialog_id.get_secret_chat_id());
+      return search_private_chat_participants(td_->contacts_manager_->get_my_id("search_dialog_participants"),
+                                              peer_user_id, query, limit);
+    }
     case DialogType::None:
     default:
       UNREACHABLE();
@@ -19267,8 +19438,9 @@ tl_object_ptr<td_api::ChatEventAction> MessagesManager::get_chat_event_action_ob
     case telegram_api::channelAdminLogEventActionParticipantInvite::ID: {
       auto action = move_tl_object_as<telegram_api::channelAdminLogEventActionParticipantInvite>(action_ptr);
       auto member = td_->contacts_manager_->get_dialog_participant(ChannelId(), std::move(action->participant_));
-      return make_tl_object<td_api::chatEventMemberInvited>(member.user_id.get(),
-                                                            member.status.get_chat_member_status_object());
+      return make_tl_object<td_api::chatEventMemberInvited>(
+          td_->contacts_manager_->get_user_id_object(member.user_id, "chatEventMemberInvited"),
+          member.status.get_chat_member_status_object());
     }
     case telegram_api::channelAdminLogEventActionParticipantToggleBan::ID: {
       auto action = move_tl_object_as<telegram_api::channelAdminLogEventActionParticipantToggleBan>(action_ptr);
@@ -19280,9 +19452,9 @@ tl_object_ptr<td_api::ChatEventAction> MessagesManager::get_chat_event_action_ob
         LOG(ERROR) << old_member.user_id << " VS " << new_member.user_id;
         return nullptr;
       }
-      return make_tl_object<td_api::chatEventMemberRestricted>(old_member.user_id.get(),
-                                                               old_member.status.get_chat_member_status_object(),
-                                                               new_member.status.get_chat_member_status_object());
+      return make_tl_object<td_api::chatEventMemberRestricted>(
+          td_->contacts_manager_->get_user_id_object(old_member.user_id, "chatEventMemberRestricted"),
+          old_member.status.get_chat_member_status_object(), new_member.status.get_chat_member_status_object());
     }
     case telegram_api::channelAdminLogEventActionParticipantToggleAdmin::ID: {
       auto action = move_tl_object_as<telegram_api::channelAdminLogEventActionParticipantToggleAdmin>(action_ptr);
@@ -19294,9 +19466,9 @@ tl_object_ptr<td_api::ChatEventAction> MessagesManager::get_chat_event_action_ob
         LOG(ERROR) << old_member.user_id << " VS " << new_member.user_id;
         return nullptr;
       }
-      return make_tl_object<td_api::chatEventMemberPromoted>(old_member.user_id.get(),
-                                                             old_member.status.get_chat_member_status_object(),
-                                                             new_member.status.get_chat_member_status_object());
+      return make_tl_object<td_api::chatEventMemberPromoted>(
+          td_->contacts_manager_->get_user_id_object(old_member.user_id, "chatEventMemberPromoted"),
+          old_member.status.get_chat_member_status_object(), new_member.status.get_chat_member_status_object());
     }
     case telegram_api::channelAdminLogEventActionChangeTitle::ID: {
       auto action = move_tl_object_as<telegram_api::channelAdminLogEventActionChangeTitle>(action_ptr);
@@ -19410,8 +19582,8 @@ void MessagesManager::on_get_event_log(int64 random_id,
     if (action == nullptr) {
       continue;
     }
-    result->events_.push_back(
-        make_tl_object<td_api::chatEvent>(event->id_, event->date_, user_id.get(), std::move(action)));
+    result->events_.push_back(make_tl_object<td_api::chatEvent>(
+        event->id_, event->date_, td_->contacts_manager_->get_user_id_object(user_id, "chatEvent"), std::move(action)));
   }
 }
 
@@ -19559,15 +19731,15 @@ NotificationSettings MessagesManager::get_notification_settings(
 unique_ptr<MessageContent> MessagesManager::get_secret_message_document(
     tl_object_ptr<telegram_api::encryptedFile> file,
     tl_object_ptr<secret_api::decryptedMessageMediaDocument> &&document,
-    vector<tl_object_ptr<telegram_api::DocumentAttribute>> &&attributes, DialogId owner_dialog_id, string &&caption,
-    bool is_opened) const {
+    vector<tl_object_ptr<telegram_api::DocumentAttribute>> &&attributes, DialogId owner_dialog_id,
+    FormattedText &&caption, bool is_opened) const {
   return get_message_document(td_->documents_manager_->on_get_document(
                                   {std::move(file), std::move(document), std::move(attributes)}, owner_dialog_id),
                               std::move(caption), is_opened);
 }
 
 unique_ptr<MessageContent> MessagesManager::get_message_document(tl_object_ptr<telegram_api::document> &&document,
-                                                                 DialogId owner_dialog_id, string &&caption,
+                                                                 DialogId owner_dialog_id, FormattedText &&caption,
                                                                  bool is_opened,
                                                                  MultiPromiseActor *load_data_multipromise_ptr) const {
   return get_message_document(
@@ -19576,7 +19748,8 @@ unique_ptr<MessageContent> MessagesManager::get_message_document(tl_object_ptr<t
 }
 
 unique_ptr<MessageContent> MessagesManager::get_message_document(
-    std::pair<DocumentsManager::DocumentType, FileId> &&parsed_document, string &&caption, bool is_opened) const {
+    std::pair<DocumentsManager::DocumentType, FileId> &&parsed_document, FormattedText &&caption,
+    bool is_opened) const {
   auto document_type = parsed_document.first;
   auto file_id = parsed_document.second;
   if (document_type != DocumentsManager::DocumentType::Unknown) {
@@ -19606,7 +19779,7 @@ unique_ptr<MessageContent> MessagesManager::get_message_document(
 }
 
 unique_ptr<MessagePhoto> MessagesManager::get_message_photo(tl_object_ptr<telegram_api::photo> &&photo,
-                                                            DialogId owner_dialog_id, string &&caption) const {
+                                                            DialogId owner_dialog_id, FormattedText &&caption) const {
   auto m = make_unique<MessagePhoto>();
 
   m->photo = get_photo(td_->file_manager_.get(), std::move(photo), owner_dialog_id);
@@ -19615,14 +19788,36 @@ unique_ptr<MessagePhoto> MessagesManager::get_message_photo(tl_object_ptr<telegr
   return m;
 }
 
-string MessagesManager::get_media_caption(const string &message_text, string &&caption) {
+FormattedText MessagesManager::get_secret_media_caption(string &&message_text, string &&message_caption) {
+  FormattedText caption;
   if (message_text.empty()) {
-    return std::move(caption);
+    caption.text = std::move(message_caption);
+  } else if (message_caption.empty()) {
+    caption.text = std::move(message_text);
+  } else {
+    caption.text = message_text + "\n\n" + message_caption;
   }
-  if (caption.empty()) {
-    return message_text;
+
+  caption.entities = find_entities(caption.text, false);
+  return caption;
+}
+
+FormattedText MessagesManager::get_message_text(string message_text,
+                                                vector<tl_object_ptr<telegram_api::MessageEntity>> &&server_entities,
+                                                int32 send_date) const {
+  auto entities = get_message_entities(td_->contacts_manager_.get(), std::move(server_entities));
+  auto status = fix_text_message(message_text, entities, true, true, true, false);
+  if (status.is_error()) {
+    if (send_date == 0 || send_date > 1497000000) {  // approximate fix date
+      LOG(ERROR) << "Receive error " << status << " while parsing message content \"" << message_text << "\" sent at "
+                 << send_date << " with entities " << format::as_array(entities);
+    }
+    if (!clean_input_string(message_text)) {
+      message_text.clear();
+    }
+    entities.clear();
   }
-  return message_text + "\n\n" + caption;
+  return FormattedText{std::move(message_text), std::move(entities)};
 }
 
 template <class ToT, class FromT>
@@ -19820,7 +20015,7 @@ Photo MessagesManager::get_web_document_photo(tl_object_ptr<telegram_api::webDoc
   // TODO real file name
   FileId file_id = td_->file_manager_->register_remote(
       FullRemoteFileLocation(FileType::Photo, url, web_document->access_hash_, DcId::internal(web_document->dc_id_)),
-      owner_dialog_id, 0, web_document->size_, "");
+      FileLocationSource::FromServer, owner_dialog_id, 0, web_document->size_, "");
 
   Dimensions dimensions;
   for (auto &attribute : web_document->attributes_) {
@@ -19862,7 +20057,7 @@ unique_ptr<MessageContent> MessagesManager::get_secret_message_content(
     vector<tl_object_ptr<secret_api::MessageEntity>> &&secret_entities, DialogId owner_dialog_id,
     MultiPromiseActor &load_data_multipromise) const {
   auto entities = get_message_entities(std::move(secret_entities));
-  auto status = fix_text_message(message_text, entities, nullptr, true, false, true, false);
+  auto status = fix_text_message(message_text, entities, true, false, true, false);
   if (status.is_error()) {
     LOG(WARNING) << "Receive error " << status << " while parsing secret message \"" << message_text
                  << "\" with entities " << format::as_array(entities);
@@ -19873,7 +20068,7 @@ unique_ptr<MessageContent> MessagesManager::get_secret_message_content(
   }
 
   if (media == nullptr) {
-    return make_unique<MessageText>(std::move(message_text), std::move(entities), WebPageId());
+    return make_unique<MessageText>(FormattedText{std::move(message_text), std::move(entities)}, WebPageId());
   }
 
   int32 constructor_id = media->get_id();
@@ -19881,7 +20076,7 @@ unique_ptr<MessageContent> MessagesManager::get_secret_message_content(
     if (constructor_id != secret_api::decryptedMessageMediaEmpty::ID) {
       LOG(INFO) << "Receive non-empty message text and media";
     } else {
-      return make_unique<MessageText>(std::move(message_text), std::move(entities), WebPageId());
+      return make_unique<MessageText>(FormattedText{std::move(message_text), std::move(entities)}, WebPageId());
     }
   }
 
@@ -19972,7 +20167,7 @@ unique_ptr<MessageContent> MessagesManager::get_secret_message_content(
       auto url = r_http_url.ok().get_url();
 
       auto web_page_id = td_->web_pages_manager_->get_web_page_by_url(url, load_data_multipromise.get_promise());
-      auto result = make_unique<MessageText>(std::move(message_text), std::move(entities), web_page_id);
+      auto result = make_unique<MessageText>(FormattedText{std::move(message_text), std::move(entities)}, web_page_id);
       if (!result->web_page_id.is_valid()) {
         load_data_multipromise.add_promise(
             PromiseCreator::lambda([td = td_, url, &web_page_id = result->web_page_id](Result<Unit> result) {
@@ -19986,7 +20181,8 @@ unique_ptr<MessageContent> MessagesManager::get_secret_message_content(
     case secret_api::decryptedMessageMediaExternalDocument::ID: {
       auto external_document = move_tl_object_as<secret_api::decryptedMessageMediaExternalDocument>(media);
       auto document = secret_to_telegram_document(*external_document);
-      return get_message_document(std::move(document), owner_dialog_id, std::move(message_text), false,
+      return get_message_document(std::move(document), owner_dialog_id,
+                                  FormattedText{std::move(message_text), std::move(entities)}, false,
                                   &load_data_multipromise);
     }
   }
@@ -19995,7 +20191,7 @@ unique_ptr<MessageContent> MessagesManager::get_secret_message_content(
     is_media_empty = true;
   }
   if (is_media_empty) {
-    return make_unique<MessageText>(std::move(message_text), std::move(entities), WebPageId());
+    return make_unique<MessageText>(FormattedText{std::move(message_text), std::move(entities)}, WebPageId());
   }
   switch (constructor_id) {
     case secret_api::decryptedMessageMediaPhoto::ID: {
@@ -20003,10 +20199,9 @@ unique_ptr<MessageContent> MessagesManager::get_secret_message_content(
       if (!clean_input_string(message_photo->caption_)) {
         message_photo->caption_.clear();
       }
-      string caption = get_media_caption(message_text, std::move(message_photo->caption_));
       return make_unique<MessagePhoto>(
           get_photo(td_->file_manager_.get(), std::move(file), std::move(message_photo), owner_dialog_id),
-          std::move(caption));
+          get_secret_media_caption(std::move(message_text), std::move(message_photo->caption_)));
     }
     case secret_api::decryptedMessageMediaDocument::ID: {
       auto message_document = move_tl_object_as<secret_api::decryptedMessageMediaDocument>(media);
@@ -20016,11 +20211,11 @@ unique_ptr<MessageContent> MessagesManager::get_secret_message_content(
       if (!clean_input_string(message_document->mime_type_)) {
         message_document->mime_type_.clear();
       }
-      string caption = get_media_caption(message_text, std::move(message_document->caption_));
       auto attributes = secret_to_telegram(message_document->attributes_);
       message_document->attributes_.clear();
-      return get_secret_message_document(std::move(file), std::move(message_document), std::move(attributes),
-                                         owner_dialog_id, std::move(caption), false);
+      return get_secret_message_document(
+          std::move(file), std::move(message_document), std::move(attributes), owner_dialog_id,
+          get_secret_media_caption(std::move(message_text), std::move(message_document->caption_)), false);
     }
     default:
       LOG(ERROR) << "Unsupported: " << to_string(media);
@@ -20028,41 +20223,28 @@ unique_ptr<MessageContent> MessagesManager::get_secret_message_content(
   }
 }
 
-unique_ptr<MessageContent> MessagesManager::get_message_content(
-    string message_text, tl_object_ptr<telegram_api::MessageMedia> &&media,
-    vector<tl_object_ptr<telegram_api::MessageEntity>> &&server_entities, DialogId owner_dialog_id,
-    bool is_content_read, UserId via_bot_user_id, int32 *ttl) const {
-  auto entities = get_message_entities(std::move(server_entities));
-  auto status = fix_text_message(message_text, entities, nullptr, true, true, true, false);
-  if (status.is_error()) {
-    LOG(ERROR) << "Receive error " << status << " while parsing message content \"" << message_text
-               << "\" with entities " << format::as_array(entities);
-    if (!clean_input_string(message_text)) {
-      message_text.clear();
-    }
-    entities.clear();
-  }
-
+unique_ptr<MessageContent> MessagesManager::get_message_content(FormattedText message,
+                                                                tl_object_ptr<telegram_api::MessageMedia> &&media,
+                                                                DialogId owner_dialog_id, bool is_content_read,
+                                                                UserId via_bot_user_id, int32 *ttl) const {
   if (media == nullptr) {
-    return make_unique<MessageText>(std::move(message_text), std::move(entities), WebPageId());
+    return make_unique<MessageText>(std::move(message), WebPageId());
   }
 
   int32 constructor_id = media->get_id();
-  if (message_text.size()) {
+  if (message.text.size()) {
     if (constructor_id != telegram_api::messageMediaEmpty::ID) {
       LOG(INFO) << "Receive non-empty message text and media for message from " << owner_dialog_id;
     } else {
-      return make_unique<MessageText>(std::move(message_text), std::move(entities), WebPageId());
+      return make_unique<MessageText>(std::move(message), WebPageId());
     }
   }
-  string caption;
   switch (constructor_id) {
     case telegram_api::messageMediaEmpty::ID:
       LOG(ERROR) << "Receive empty message text and media for message from " << owner_dialog_id;
-      return make_unique<MessageText>(std::move(message_text), std::move(entities), WebPageId());
+      return make_unique<MessageText>(std::move(message), WebPageId());
     case telegram_api::messageMediaPhoto::ID: {
       auto message_photo = move_tl_object_as<telegram_api::messageMediaPhoto>(media);
-      caption = get_media_caption(message_text, std::move(message_photo->caption_));
       if ((message_photo->flags_ & telegram_api::messageMediaPhoto::PHOTO_MASK) == 0) {
         if ((message_photo->flags_ & telegram_api::messageMediaPhoto::TTL_SECONDS_MASK) == 0) {
           LOG(ERROR) << "Receive messageMediaPhoto without photo and TTL: " << oneline(to_string(message_photo));
@@ -20082,7 +20264,7 @@ unique_ptr<MessageContent> MessagesManager::get_message_content(
       if (ttl != nullptr && (message_photo->flags_ & telegram_api::messageMediaPhoto::TTL_SECONDS_MASK) != 0) {
         *ttl = message_photo->ttl_seconds_;
       }
-      return get_message_photo(move_tl_object_as<telegram_api::photo>(photo_ptr), owner_dialog_id, std::move(caption));
+      return get_message_photo(move_tl_object_as<telegram_api::photo>(photo_ptr), owner_dialog_id, std::move(message));
     }
     case telegram_api::messageMediaGeo::ID: {
       auto message_geo_point = move_tl_object_as<telegram_api::messageMediaGeo>(media);
@@ -20122,12 +20304,15 @@ unique_ptr<MessageContent> MessagesManager::get_message_content(
     }
     case telegram_api::messageMediaContact::ID: {
       auto message_contact = move_tl_object_as<telegram_api::messageMediaContact>(media);
+      if (message_contact->user_id_ != 0) {
+        td_->contacts_manager_->get_user_id_object(UserId(message_contact->user_id_),
+                                                   "messageMediaContact");  // to ensure updateUser
+      }
       return make_unique<MessageContact>(Contact(message_contact->phone_number_, message_contact->first_name_,
                                                  message_contact->last_name_, message_contact->user_id_));
     }
     case telegram_api::messageMediaDocument::ID: {
       auto message_document = move_tl_object_as<telegram_api::messageMediaDocument>(media);
-      caption = get_media_caption(message_text, std::move(message_document->caption_));
       if ((message_document->flags_ & telegram_api::messageMediaDocument::DOCUMENT_MASK) == 0) {
         if ((message_document->flags_ & telegram_api::messageMediaDocument::TTL_SECONDS_MASK) == 0) {
           LOG(ERROR) << "Receive messageMediaDocument without document and TTL: "
@@ -20149,7 +20334,7 @@ unique_ptr<MessageContent> MessagesManager::get_message_content(
         *ttl = message_document->ttl_seconds_;
       }
       return get_message_document(move_tl_object_as<telegram_api::document>(document_ptr), owner_dialog_id,
-                                  std::move(caption), is_content_read, nullptr);
+                                  std::move(message), is_content_read, nullptr);
     }
     case telegram_api::messageMediaGame::ID: {
       auto message_game = move_tl_object_as<telegram_api::messageMediaGame>(media);
@@ -20160,7 +20345,7 @@ unique_ptr<MessageContent> MessagesManager::get_message_content(
       }
 
       m->game.set_bot_user_id(via_bot_user_id);
-      m->game.set_message_text(std::move(message_text), std::move(entities));
+      m->game.set_message_text(std::move(message));
 
       return std::move(m);
     }
@@ -20187,7 +20372,7 @@ unique_ptr<MessageContent> MessagesManager::get_message_content(
     case telegram_api::messageMediaWebPage::ID: {
       auto media_web_page = move_tl_object_as<telegram_api::messageMediaWebPage>(media);
       auto web_page_id = td_->web_pages_manager_->on_get_web_page(std::move(media_web_page->webpage_), owner_dialog_id);
-      return make_unique<MessageText>(std::move(message_text), std::move(entities), web_page_id);
+      return make_unique<MessageText>(std::move(message), web_page_id);
     }
 
     case telegram_api::messageMediaUnsupported::ID: {
@@ -20198,11 +20383,7 @@ unique_ptr<MessageContent> MessagesManager::get_message_content(
   }
 
   // explicit empty media message
-  if (!caption.empty()) {
-    // caption already includes message text
-    return make_unique<MessageText>(std::move(caption), std::move(entities), WebPageId());
-  }
-  return make_unique<MessageText>(std::move(message_text), std::move(entities), WebPageId());
+  return make_unique<MessageText>(std::move(message), WebPageId());
 }
 
 unique_ptr<MessageContent> MessagesManager::dup_message_content(DialogId dialog_id, const MessageContent *content,
@@ -20215,17 +20396,21 @@ unique_ptr<MessageContent> MessagesManager::dup_message_content(DialogId dialog_
     if (to_secret && !file_view.is_encrypted()) {
       auto download_file_id = file_manager->dup_file_id(file_id);
       file_id = file_manager
-                    ->register_generate(FileType::Encrypted, "", PSTRING() << "#file_id#" << download_file_id.get(),
-                                        dialog_id, file_view.size())
+                    ->register_generate(FileType::Encrypted, FileLocationSource::FromServer, "",
+                                        PSTRING() << "#file_id#" << download_file_id.get(), dialog_id, file_view.size())
                     .ok();
     }
     return file_manager->dup_file_id(file_id);
   };
 
+  FileId thumbnail_file_id;
+  if (to_secret) {
+    thumbnail_file_id = get_message_content_thumbnail_file_id(content);
+  }
   switch (content->get_id()) {
     case MessageAnimation::ID: {
       auto result = make_unique<MessageAnimation>(*static_cast<const MessageAnimation *>(content));
-      if (td_->documents_manager_->has_input_media(result->file_id, to_secret)) {
+      if (td_->documents_manager_->has_input_media(result->file_id, thumbnail_file_id, to_secret)) {
         return std::move(result);
       }
       result->file_id = td_->animations_manager_->dup_animation(fix_file_id(result->file_id), result->file_id);
@@ -20234,7 +20419,7 @@ unique_ptr<MessageContent> MessagesManager::dup_message_content(DialogId dialog_
     }
     case MessageAudio::ID: {
       auto result = make_unique<MessageAudio>(*static_cast<const MessageAudio *>(content));
-      if (td_->documents_manager_->has_input_media(result->file_id, to_secret)) {
+      if (td_->documents_manager_->has_input_media(result->file_id, thumbnail_file_id, to_secret)) {
         return std::move(result);
       }
       result->file_id = td_->audios_manager_->dup_audio(fix_file_id(result->file_id), result->file_id);
@@ -20245,7 +20430,7 @@ unique_ptr<MessageContent> MessagesManager::dup_message_content(DialogId dialog_
       return make_unique<MessageContact>(*static_cast<const MessageContact *>(content));
     case MessageDocument::ID: {
       auto result = make_unique<MessageDocument>(*static_cast<const MessageDocument *>(content));
-      if (td_->documents_manager_->has_input_media(result->file_id, to_secret)) {
+      if (td_->documents_manager_->has_input_media(result->file_id, thumbnail_file_id, to_secret)) {
         return std::move(result);
       }
       result->file_id = td_->documents_manager_->dup_document(fix_file_id(result->file_id), result->file_id);
@@ -20316,6 +20501,9 @@ unique_ptr<MessageContent> MessagesManager::dup_message_content(DialogId dialog_
       }
 
       result->photo.photos.back().file_id = fix_file_id(result->photo.photos.back().file_id);
+      if (thumbnail.type != 0) {
+        result->photo.photos[0].file_id = td_->file_manager_->dup_file_id(result->photo.photos[0].file_id);
+      }
       return std::move(result);
     }
     case MessageSticker::ID: {
@@ -20333,7 +20521,7 @@ unique_ptr<MessageContent> MessagesManager::dup_message_content(DialogId dialog_
       return make_unique<MessageVenue>(*static_cast<const MessageVenue *>(content));
     case MessageVideo::ID: {
       auto result = make_unique<MessageVideo>(*static_cast<const MessageVideo *>(content));
-      if (td_->documents_manager_->has_input_media(result->file_id, to_secret)) {
+      if (td_->documents_manager_->has_input_media(result->file_id, thumbnail_file_id, to_secret)) {
         return std::move(result);
       }
       result->file_id = td_->videos_manager_->dup_video(fix_file_id(result->file_id), result->file_id);
@@ -20343,7 +20531,7 @@ unique_ptr<MessageContent> MessagesManager::dup_message_content(DialogId dialog_
     case MessageVideoNote::ID: {
       auto result = make_unique<MessageVideoNote>(*static_cast<const MessageVideoNote *>(content));
       result->is_viewed = false;
-      if (td_->documents_manager_->has_input_media(result->file_id, to_secret)) {
+      if (td_->documents_manager_->has_input_media(result->file_id, thumbnail_file_id, to_secret)) {
         return std::move(result);
       }
       result->file_id = td_->video_notes_manager_->dup_video_note(fix_file_id(result->file_id), result->file_id);
@@ -20353,7 +20541,7 @@ unique_ptr<MessageContent> MessagesManager::dup_message_content(DialogId dialog_
     case MessageVoiceNote::ID: {
       auto result = make_unique<MessageVoiceNote>(*static_cast<const MessageVoiceNote *>(content));
       result->is_listened = false;
-      if (td_->documents_manager_->has_input_media(result->file_id, to_secret)) {
+      if (td_->documents_manager_->has_input_media(result->file_id, thumbnail_file_id, to_secret)) {
         return std::move(result);
       }
       result->file_id = td_->voice_notes_manager_->dup_voice_note(fix_file_id(result->file_id), result->file_id);
@@ -20548,7 +20736,7 @@ unique_ptr<MessageContent> MessagesManager::get_message_action_content(
       UNREACHABLE();
   }
   // explicit empty or wrong action
-  return make_unique<MessageText>("", vector<MessageEntity>(), WebPageId());
+  return make_unique<MessageText>(FormattedText{}, WebPageId());
 }
 
 int32 MessagesManager::get_random_y(MessageId message_id) {
@@ -20565,6 +20753,7 @@ MessagesManager::Message *MessagesManager::add_message_to_dialog(DialogId dialog
   MessageId message_id = message->message_id;
   if (!message_id.is_valid()) {
     LOG(ERROR) << "Receive " << message_id << " in " << dialog_id;
+    debug_add_message_to_dialog_fail_reason = "invalid message id";
     return nullptr;
   }
 
@@ -20593,10 +20782,12 @@ MessagesManager::Message *MessagesManager::add_message_to_dialog(Dialog *d, uniq
 
   if (d->deleted_message_ids.count(message_id)) {
     LOG(INFO) << "Skip adding deleted " << message_id << " to " << dialog_id;
+    debug_add_message_to_dialog_fail_reason = "adding deleted message";
     return nullptr;
   }
   if (message_id.get() <= d->last_clear_history_message_id.get()) {
     LOG(INFO) << "Skip adding cleared " << message_id << " to " << dialog_id;
+    debug_add_message_to_dialog_fail_reason = "cleared full history";
     return nullptr;
   }
   if (d->deleted_message_ids.count(message->reply_to_message_id)) {
@@ -20613,6 +20804,7 @@ MessagesManager::Message *MessagesManager::add_message_to_dialog(Dialog *d, uniq
   if (!message_id.is_valid()) {
     LOG(ERROR) << "Receive " << message_id << " in " << dialog_id << " from " << source;
     CHECK(!message->from_database);
+    debug_add_message_to_dialog_fail_reason = "invalid message id";
     return nullptr;
   }
 
@@ -20653,6 +20845,7 @@ MessagesManager::Message *MessagesManager::add_message_to_dialog(Dialog *d, uniq
     } else {
       LOG(INFO) << "Ignore " << message_id << " in " << dialog_id << " received not through update from " << source;
     }
+    debug_add_message_to_dialog_fail_reason = "too new message not from update";
     return nullptr;
   }
   if ((message_id.is_server() || (message_id.is_local() && dialog_id.get_type() == DialogType::SecretChat)) &&
@@ -20661,6 +20854,7 @@ MessagesManager::Message *MessagesManager::add_message_to_dialog(Dialog *d, uniq
     if (message->from_database) {
       delete_message_from_database(d, message_id, message.get(), true);
     }
+    debug_add_message_to_dialog_fail_reason = "ignore unavailable message";
     return nullptr;
   }
 
@@ -20700,6 +20894,7 @@ MessagesManager::Message *MessagesManager::add_message_to_dialog(Dialog *d, uniq
     LOG(INFO) << "Process MessageChatDeleteHistory in " << message_id << " in " << dialog_id << " with date "
               << message->date << " from " << source;
     CHECK(!message->from_database);
+    debug_add_message_to_dialog_fail_reason = "skip adding MessageChatDeleteHistory";
     return nullptr;
   }
 
@@ -20762,7 +20957,13 @@ MessagesManager::Message *MessagesManager::add_message_to_dialog(Dialog *d, uniq
 
   if (d->have_full_history && !message->from_database && !from_update && !message_id.is_local() &&
       !message_id.is_yet_unsent()) {
-    LOG(ERROR) << "Have full history in " << dialog_id << ", but receive unknown " << message_id;
+    LOG(ERROR) << "Have full history in " << dialog_id << ", but receive unknown " << message_id << ". Last new is "
+               << d->last_new_message_id << ", last is " << d->last_message_id << ", first database is "
+               << d->first_database_message_id << ", last database is " << d->last_database_message_id
+               << ", last read inbox is " << d->last_read_inbox_message_id << ", last read outbox is "
+               << d->last_read_inbox_message_id << ", last read all mentions is "
+               << d->last_read_all_mentions_message_id << ", max unavailable is " << d->max_unavailable_message_id
+               << ", last assigned is " << d->last_assigned_message_id;
     d->have_full_history = false;
     on_dialog_updated(dialog_id, "drop have_full_history");
   }
@@ -20778,9 +20979,11 @@ MessagesManager::Message *MessagesManager::add_message_to_dialog(Dialog *d, uniq
       if (d->dialog_id.get_type() == DialogType::SecretChat) {
         LOG(INFO) << "Can't add " << message_id << " with expired TTL to " << dialog_id;
         delete_message_from_database(d, message_id, message.get(), true);
+        debug_add_message_to_dialog_fail_reason = "delete expired by TTL message";
         return nullptr;
       } else {
         on_message_ttl_expired_impl(d, message.get());
+        message_content_id = message->content->get_id();
         if (message->from_database) {
           add_message_to_database(d, message.get(), "add expired message to dialog");
         }
@@ -20954,7 +21157,6 @@ MessagesManager::Message *MessagesManager::add_message_to_dialog(Dialog *d, uniq
         set_dialog_first_database_message_id(d, message_id, "add_message_to_dialog");
         try_restore_dialog_reply_markup(d, message.get());
       }
-      LOG(INFO) << "Update last_database_message_id in " << dialog_id << " to " << d->last_database_message_id;
       on_dialog_updated(dialog_id, "update_last_database_message_id");
     }
   }
@@ -20987,7 +21189,7 @@ MessagesManager::Message *MessagesManager::add_message_to_dialog(Dialog *d, uniq
   }
 
   if (!td_->auth_manager_->is_bot() && from_update && d->reply_markup_message_id != MessageId() &&
-      message->content->get_id() == MessageChatDeleteUser::ID) {
+      message_content_id == MessageChatDeleteUser::ID) {
     auto deleted_user_id = static_cast<const MessageChatDeleteUser *>(message->content.get())->user_id;
     if (td_->contacts_manager_->is_user_bot(deleted_user_id)) {
       const Message *old_message = get_message_force(d, d->reply_markup_message_id);
@@ -20997,9 +21199,14 @@ MessagesManager::Message *MessagesManager::add_message_to_dialog(Dialog *d, uniq
     }
   }
 
+  if (message_content_id == MessageContactRegistered::ID && !d->has_contact_registered_message) {
+    d->has_contact_registered_message = true;
+    on_dialog_updated(dialog_id, "update_has_contact_registered_message");
+  }
+
   if (from_update && dialog_id.get_type() == DialogType::Channel) {
     int32 new_participant_count = 0;
-    switch (message->content->get_id()) {
+    switch (message_content_id) {
       case MessageChatAddUsers::ID:
         new_participant_count =
             narrow_cast<int32>(static_cast<const MessageChatAddUsers *>(message->content.get())->user_ids.size());
@@ -21022,7 +21229,7 @@ MessagesManager::Message *MessagesManager::add_message_to_dialog(Dialog *d, uniq
   }
   if (!td_->auth_manager_->is_bot() && (from_update || message_id.is_yet_unsent()) &&
       message->forward_info == nullptr && (message->is_outgoing || dialog_id == my_dialog_id)) {
-    switch (message->content->get_id()) {
+    switch (message_content_id) {
       case MessageAnimation::ID:
         if (dialog_id.get_type() != DialogType::SecretChat) {
           td_->animations_manager_->add_saved_animation_by_id(get_message_content_file_id(message->content.get()));
@@ -21135,6 +21342,7 @@ MessagesManager::Message *MessagesManager::add_message_to_dialog(Dialog *d, uniq
       // nothing to do
       break;
     case DialogType::SecretChat:
+      LOG(INFO) << "Add correspondence random_id " << (*v)->random_id << " to " << message_id << " in " << dialog_id;
       d->random_id_to_message_id[(*v)->random_id] = message_id;
       break;
     case DialogType::None:
@@ -21143,6 +21351,22 @@ MessagesManager::Message *MessagesManager::add_message_to_dialog(Dialog *d, uniq
   }
 
   return v->get();
+}
+
+void MessagesManager::on_message_changed(const Dialog *d, const Message *m, const char *source) {
+  CHECK(d != nullptr);
+  CHECK(m != nullptr);
+  if (m->message_id == d->last_message_id) {
+    send_update_chat_last_message_impl(d, source);
+  }
+
+  if (m->message_id == d->last_database_message_id) {
+    on_dialog_updated(d->dialog_id, source);
+  }
+
+  if (!m->message_id.is_yet_unsent()) {
+    add_message_to_database(d, m, source);
+  }
 }
 
 void MessagesManager::add_message_to_database(const Dialog *d, const Message *m, const char *source) {
@@ -21156,10 +21380,6 @@ void MessagesManager::add_message_to_database(const Dialog *d, const Message *m,
   CHECK(message_id.is_server() || message_id.is_local()) << source;
 
   LOG(INFO) << "Add " << FullMessageId(d->dialog_id, message_id) << " to database from " << source;
-
-  if (message_id == d->last_database_message_id) {
-    on_dialog_updated(d->dialog_id, "update_last_database_message");
-  }
 
   ServerMessageId unique_message_id;
   int64 random_id = 0;
@@ -21482,7 +21702,8 @@ void MessagesManager::update_message(Dialog *d, unique_ptr<Message> &old_message
       << ". Old message: " << to_string(get_message_object(dialog_id, old_message.get()))
       << ". New message: " << to_string(get_message_object(dialog_id, new_message.get()));
 
-  if (update_message_contains_unread_mention(d, old_message.get(), new_message->contains_unread_mention)) {
+  if (update_message_contains_unread_mention(d, old_message.get(), new_message->contains_unread_mention,
+                                             "update_message")) {
     is_changed = true;
   }
   if (update_message_views(dialog_id, old_message.get(), new_message->views)) {
@@ -21556,9 +21777,9 @@ void MessagesManager::update_message(Dialog *d, unique_ptr<Message> &old_message
 
   (void)is_changed;
   // need to save message always, because it might be added to some message index
-  if (!message_id.is_yet_unsent() /*&& is_changed*/) {
-    add_message_to_database(d, old_message.get(), "update_message");
-  }
+  // if (is_changed) {
+  on_message_changed(d, old_message.get(), "update_message");
+  // }
 }
 
 bool MessagesManager::need_message_text_changed_warning(const Message *old_message, const MessageText *old_content,
@@ -21571,14 +21792,15 @@ bool MessagesManager::need_message_text_changed_warning(const Message *old_messa
     // original message may be edited
     return false;
   }
-  if (new_content->text == "Unsupported characters" ||
-      new_content->text == "This channel is blocked because it was used to spread pornographic content.") {
+  if (new_content->text.text == "Unsupported characters" ||
+      new_content->text.text == "This channel is blocked because it was used to spread pornographic content.") {
     // message contained unsupported characters, text is replaced
     return false;
   }
-  if (old_message->message_id.is_yet_unsent() && !old_content->entities.empty() &&
-      old_content->entities[0].offset == 0 && (new_content->entities.empty() || new_content->entities[0].offset != 0) &&
-      old_content->text != new_content->text && ends_with(old_content->text, new_content->text)) {
+  if (old_message->message_id.is_yet_unsent() && !old_content->text.entities.empty() &&
+      old_content->text.entities[0].offset == 0 &&
+      (new_content->text.entities.empty() || new_content->text.entities[0].offset != 0) &&
+      old_content->text.text != new_content->text.text && ends_with(old_content->text.text, new_content->text.text)) {
     // server has deleted first entity and ltrim the message
     return false;
   }
@@ -21648,17 +21870,17 @@ bool MessagesManager::update_message_content(DialogId dialog_id, const Message *
       case MessageText::ID: {
         auto old_ = static_cast<const MessageText *>(old_content.get());
         auto new_ = static_cast<const MessageText *>(new_content.get());
-        if (old_->text != new_->text) {
+        if (old_->text.text != new_->text.text) {
           if (need_message_text_changed_warning(old_message, old_, new_)) {
             LOG(ERROR) << "Message text has changed for " << to_string(get_message_object(dialog_id, old_message))
                        << ". New content is " << to_string(get_message_content_object(new_content.get()));
           }
           need_update = true;
         }
-        if (old_->entities != new_->entities) {
+        if (old_->text.entities != new_->text.entities) {
           const int32 MAX_CUSTOM_ENTITIES_COUNT = 100;  // server-size limit
           if (need_message_text_changed_warning(old_message, old_, new_) &&
-              old_->entities.size() <= MAX_CUSTOM_ENTITIES_COUNT) {
+              old_->text.entities.size() <= MAX_CUSTOM_ENTITIES_COUNT) {
             LOG(WARNING) << "Entities has changed for " << to_string(get_message_object(dialog_id, old_message))
                          << ". New content is " << to_string(get_message_content_object(new_content.get()));
           }
@@ -21783,7 +22005,7 @@ bool MessagesManager::update_message_content(DialogId dialog_id, const Message *
               FileId file_id = td_->file_manager_->register_remote(
                   FullRemoteFileLocation(FileType::Photo, new_file_view.remote_location().get_id(),
                                          new_file_view.remote_location().get_access_hash(), 0, 0, 0, DcId::invalid()),
-                  dialog_id, old_photo->photos.back().size, 0, "");
+                  FileLocationSource::FromServer, dialog_id, old_photo->photos.back().size, 0, "");
               LOG_STATUS(td_->file_manager_->merge(file_id, old_file_id));
             }
           }
@@ -22080,7 +22302,7 @@ void MessagesManager::force_create_dialog(DialogId dialog_id, const char *source
     if (have_input_peer(dialog_id, AccessRights::Read)) {
       if (dialog_id.get_type() != DialogType::SecretChat && !d->notification_settings.is_synchronized) {
         // asynchronously preload information about the dialog
-        get_dialog_query(dialog_id, Auto());
+        send_get_dialog_query(dialog_id, Auto());
       }
     } else {
       if (!have_dialog_info(dialog_id)) {
@@ -22313,7 +22535,7 @@ void MessagesManager::add_dialog_last_database_message(Dialog *d, unique_ptr<Mes
   CHECK(last_database_message->right == nullptr);
 
   auto message_id = last_database_message->message_id;
-  CHECK(d->last_database_message_id == message_id);
+  CHECK(d->last_database_message_id == message_id) << message_id << " " << d->last_database_message_id;
 
   if (!have_input_peer(d->dialog_id, AccessRights::Read)) {
     // do not add last message to inaccessible dialog
@@ -22378,6 +22600,7 @@ int64 MessagesManager::get_next_pinned_dialog_order() {
 
 void MessagesManager::update_dialog_pos(Dialog *d, bool remove_from_dialog_list, const char *source,
                                         bool need_send_update_chat_order) {
+  CHECK(d != nullptr);
   LOG(INFO) << "Trying to update dialog " << d->dialog_id << " order from " << source;
   auto dialog_type = d->dialog_id.get_type();
 
@@ -22772,7 +22995,7 @@ void MessagesManager::get_channel_difference(DialogId dialog_id, int32 pts, bool
 void MessagesManager::do_get_channel_difference(DialogId dialog_id, int32 pts, bool force,
                                                 tl_object_ptr<telegram_api::InputChannel> &&input_channel,
                                                 const char *source) {
-  auto inserted = active_get_channel_differencies_.insert(dialog_id);
+  auto inserted = active_get_channel_differencies_.emplace(dialog_id, source);
   if (!inserted.second) {
     LOG(INFO) << "Skip running channels.getDifference for " << dialog_id << " from " << source
               << " because it has already been run";
@@ -22824,7 +23047,7 @@ void MessagesManager::process_get_channel_difference_updates(
       }
     }
   }
-  CHECK(!running_get_channel_difference(dialog_id));
+  CHECK(!running_get_channel_difference(dialog_id)) << '"' << active_get_channel_differencies_[dialog_id] << '"';
 }
 
 void MessagesManager::on_get_channel_dialog(DialogId dialog_id, MessageId last_message_id,
@@ -23066,7 +23289,7 @@ void MessagesManager::on_get_channel_difference(
 }
 
 void MessagesManager::after_get_channel_difference(DialogId dialog_id, bool success) {
-  CHECK(!running_get_channel_difference(dialog_id));
+  CHECK(!running_get_channel_difference(dialog_id)) << '"' << active_get_channel_differencies_[dialog_id] << '"';
 
   auto logevent_it = get_channel_difference_to_logevent_id_.find(dialog_id);
   if (logevent_it != get_channel_difference_to_logevent_id_.end()) {
@@ -23089,6 +23312,7 @@ void MessagesManager::after_get_channel_difference(DialogId dialog_id, bool succ
       auto update_pts_count = it->second.pts_count;
       d->postponed_channel_updates.erase(it);
       auto old_size = d->postponed_channel_updates.size();
+      auto update_id = update->get_id();
       add_pending_channel_update(dialog_id, std::move(update), update_pts, update_pts_count,
                                  "apply postponed channel updates", true);
       if (d->postponed_channel_updates.size() != old_size || running_get_channel_difference(dialog_id)) {
@@ -23098,8 +23322,8 @@ void MessagesManager::after_get_channel_difference(DialogId dialog_id, bool succ
           LOG(INFO) << "Can't apply postponed channel updates";
         } else {
           // otherwise we protecting from getChannelDifference repeating calls by dropping pending updates
-          LOG(ERROR) << "Failed to apply postponed updates in " << dialog_id << " with pts " << d->pts
-                     << ", update pts is " << update_pts << ", update pts count is " << update_pts_count;
+          LOG(ERROR) << "Failed to apply postponed updates of type " << update_id << " in " << dialog_id << " with pts "
+                     << d->pts << ", update pts is " << update_pts << ", update pts count is " << update_pts_count;
           d->postponed_channel_updates.clear();
         }
         break;
@@ -23146,10 +23370,10 @@ void MessagesManager::update_used_hashtags(DialogId dialog_id, const Message *m)
     return;
   }
   auto message_text = static_cast<const MessageText *>(m->content.get());
-  const unsigned char *ptr = Slice(message_text->text).ubegin();
-  const unsigned char *end = Slice(message_text->text).uend();
+  const unsigned char *ptr = Slice(message_text->text.text).ubegin();
+  const unsigned char *end = Slice(message_text->text.text).uend();
   int32 utf16_pos = 0;
-  for (auto &entity : message_text->entities) {
+  for (auto &entity : message_text->text.entities) {
     if (entity.type != MessageEntity::Type::Hashtag) {
       continue;
     }

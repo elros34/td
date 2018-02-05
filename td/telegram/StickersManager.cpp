@@ -816,9 +816,19 @@ tl_object_ptr<td_api::stickerSets> StickersManager::get_sticker_sets_object(int3
   vector<tl_object_ptr<td_api::stickerSetInfo>> result;
   result.reserve(sticker_set_ids.size());
   for (auto sticker_set_id : sticker_set_ids) {
-    result.push_back(get_sticker_set_info_object(sticker_set_id, covers_limit));
+    auto sticker_set_info = get_sticker_set_info_object(sticker_set_id, covers_limit);
+    if (sticker_set_info->size_ != 0) {
+      result.push_back(std::move(sticker_set_info));
+    }
   }
 
+  auto result_size = narrow_cast<int32>(result.size());
+  if (total_count < result_size) {
+    if (total_count != -1) {
+      LOG(ERROR) << "Have total_count = " << total_count << ", but there are " << result_size << " results";
+    }
+    total_count = result_size;
+  }
   return make_tl_object<td_api::stickerSets>(total_count, std::move(result));
 }
 
@@ -945,7 +955,7 @@ std::pair<int64, FileId> StickersManager::on_get_sticker_document(tl_object_ptr<
   int64 document_id = document->id_;
   FileId sticker_id = td_->file_manager_->register_remote(
       FullRemoteFileLocation(FileType::Sticker, document_id, document->access_hash_, DcId::internal(document->dc_id_)),
-      DialogId(), document->size_, 0, to_string(document_id) + ".webp");
+      FileLocationSource::FromServer, DialogId(), document->size_, 0, to_string(document_id) + ".webp");
 
   PhotoSize thumbnail =
       get_photo_size(td_->file_manager_.get(), FileType::Thumbnail, 0, 0, DialogId(), std::move(document->thumb_));
@@ -1219,7 +1229,7 @@ bool StickersManager::has_input_media(FileId sticker_file_id, bool is_secret) co
   auto file_view = td_->file_manager_->get_file_view(sticker_file_id);
   if (is_secret) {
     if (file_view.is_encrypted()) {
-      if (file_view.has_remote_location()) {
+      if (file_view.has_remote_location() && !sticker->message_thumbnail.file_id.is_valid()) {
         return true;
       }
     } else {
@@ -1309,10 +1319,10 @@ tl_object_ptr<telegram_api::InputMedia> StickersManager::get_input_media(
     return nullptr;
   }
   if (file_view.has_remote_location() && !file_view.remote_location().is_web()) {
-    return make_tl_object<telegram_api::inputMediaDocument>(0, file_view.remote_location().as_input_document(), "", 0);
+    return make_tl_object<telegram_api::inputMediaDocument>(0, file_view.remote_location().as_input_document(), 0);
   }
   if (file_view.has_url()) {
-    return make_tl_object<telegram_api::inputMediaDocumentExternal>(0, file_view.url(), "", 0);
+    return make_tl_object<telegram_api::inputMediaDocumentExternal>(0, file_view.url(), 0);
   }
   CHECK(!file_view.has_remote_location());
 
@@ -1334,7 +1344,7 @@ tl_object_ptr<telegram_api::InputMedia> StickersManager::get_input_media(
     }
     return make_tl_object<telegram_api::inputMediaUploadedDocument>(
         flags, false /*ignored*/, std::move(input_file), std::move(input_thumbnail), "image/webp",
-        std::move(attributes), "", vector<tl_object_ptr<telegram_api::InputDocument>>(), 0);
+        std::move(attributes), vector<tl_object_ptr<telegram_api::InputDocument>>(), 0);
   }
 
   return nullptr;
@@ -1733,7 +1743,7 @@ vector<FileId> StickersManager::get_stickers(string emoji, int32 limit, bool for
     if (need_load && !force) {
       load_sticker_sets(std::move(sets_to_load),
                         PromiseCreator::lambda([promise = std::move(promise)](Result<Unit> result) mutable {
-                          if (result.is_error()) {
+                          if (result.is_error() && result.error().message() != "STICKERSET_INVALID") {
                             LOG(ERROR) << "Failed to load sticker sets: " << result.error();
                           }
                           promise.set_value(Unit());
@@ -2193,11 +2203,12 @@ void StickersManager::on_load_sticker_set_from_database(int64 sticker_set_id, bo
   auto old_sticker_count = sticker_set->sticker_ids.size();
 
   {
-    LOG_IF(ERROR, sticker_set->is_changed)
-        << "Sticker set " << sticker_set_id << " was changed before it is loaded from database";
+    LOG_IF(ERROR, sticker_set->is_changed) << "Sticker set with" << (with_stickers ? "" : "out") << " stickers "
+                                           << sticker_set_id << " was changed before it is loaded from database";
     LogEventParser parser(value);
     parse_sticker_set(sticker_set, parser);
-    LOG_IF(ERROR, sticker_set->is_changed) << "Sticker set " << sticker_set_id << " is changed";
+    LOG_IF(ERROR, sticker_set->is_changed)
+        << "Sticker set with" << (with_stickers ? "" : "out") << " stickers " << sticker_set_id << " is changed";
     parser.fetch_end();
     parser.get_status().ensure();
   }
@@ -2821,7 +2832,7 @@ void StickersManager::create_new_sticker_set(UserId user_id, string &title, stri
 }
 
 void StickersManager::upload_sticker_file(UserId user_id, FileId file_id, Promise<Unit> &&promise) {
-  CHECK(td_->documents_manager_->get_input_media(file_id, nullptr, nullptr, "") == nullptr);
+  CHECK(td_->documents_manager_->get_input_media(file_id, nullptr, nullptr) == nullptr);
 
   auto upload_file_id = td_->documents_manager_->dup_document(td_->file_manager_->dup_file_id(file_id), file_id);
 
@@ -2875,7 +2886,7 @@ void StickersManager::do_upload_sticker_file(UserId user_id, FileId file_id,
     return promise.set_error(Status::Error(3, "Have no access to the user"));
   }
 
-  auto input_media = td_->documents_manager_->get_input_media(file_id, std::move(input_file), nullptr, "");
+  auto input_media = td_->documents_manager_->get_input_media(file_id, std::move(input_file), nullptr);
   CHECK(input_media != nullptr);
 
   td_->create_handler<UploadStickerFileQuery>(std::move(promise))
@@ -3143,9 +3154,9 @@ void StickersManager::send_update_featured_sticker_sets() {
     need_update_featured_sticker_sets_ = false;
     featured_sticker_sets_hash_ = get_featured_sticker_sets_hash();
 
-    send_closure(G()->td(), &Td::send_update,
-                 make_tl_object<td_api::updateTrendingStickerSets>(get_sticker_sets_object(
-                     narrow_cast<int32>(featured_sticker_set_ids_.size()), featured_sticker_set_ids_, 5)));
+    send_closure(
+        G()->td(), &Td::send_update,
+        make_tl_object<td_api::updateTrendingStickerSets>(get_sticker_sets_object(-1, featured_sticker_set_ids_, 5)));
   }
 }
 

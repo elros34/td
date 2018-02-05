@@ -218,13 +218,13 @@ std::pair<DocumentsManager::DocumentType, FileId> DocumentsManager::on_get_docum
     suggested_file_name = to_string(std::abs(id));
     auto extension = MimeType::to_extension(mime_type, default_extension);
     if (!extension.empty()) {
-      file_name += '.';
-      file_name += extension;
+      suggested_file_name += '.';
+      suggested_file_name += extension;
     }
   }
-  FileId file_id =
-      td_->file_manager_->register_remote(FullRemoteFileLocation(file_type, id, access_hash, DcId::internal(dc_id)),
-                                          owner_dialog_id, size, 0, suggested_file_name);
+  FileId file_id = td_->file_manager_->register_remote(
+      FullRemoteFileLocation(file_type, id, access_hash, DcId::internal(dc_id)), FileLocationSource::FromServer,
+      owner_dialog_id, size, 0, suggested_file_name);
   if (!encryption_key.empty()) {
     td_->file_manager_->set_encryption_key(file_id, std::move(encryption_key));
   }
@@ -330,10 +330,14 @@ const DocumentsManager::Document *DocumentsManager::get_document(FileId file_id)
   return document->second.get();
 }
 
-bool DocumentsManager::has_input_media(FileId file_id, bool is_secret) const {
+bool DocumentsManager::has_input_media(FileId file_id, FileId thumbnail_file_id, bool is_secret) const {
   auto file_view = td_->file_manager_->get_file_view(file_id);
   if (is_secret) {
-    return file_view.is_encrypted() && file_view.has_remote_location();
+    if (file_view.encryption_key().empty() || !file_view.has_remote_location()) {
+      return false;
+    }
+
+    return !thumbnail_file_id.is_valid();
   } else {
     if (file_view.is_encrypted()) {
       return false;
@@ -375,17 +379,16 @@ SecretInputMedia DocumentsManager::get_secret_input_media(FileId document_file_i
 
 tl_object_ptr<telegram_api::InputMedia> DocumentsManager::get_input_media(
     FileId file_id, tl_object_ptr<telegram_api::InputFile> input_file,
-    tl_object_ptr<telegram_api::InputFile> input_thumbnail, const string &caption) const {
+    tl_object_ptr<telegram_api::InputFile> input_thumbnail) const {
   auto file_view = td_->file_manager_->get_file_view(file_id);
   if (file_view.is_encrypted()) {
     return nullptr;
   }
   if (file_view.has_remote_location() && !file_view.remote_location().is_web()) {
-    return make_tl_object<telegram_api::inputMediaDocument>(0, file_view.remote_location().as_input_document(), caption,
-                                                            0);
+    return make_tl_object<telegram_api::inputMediaDocument>(0, file_view.remote_location().as_input_document(), 0);
   }
   if (file_view.has_url()) {
-    return make_tl_object<telegram_api::inputMediaDocumentExternal>(0, file_view.url(), caption, 0);
+    return make_tl_object<telegram_api::inputMediaDocumentExternal>(0, file_view.url(), 0);
   }
   CHECK(!file_view.has_remote_location());
 
@@ -403,7 +406,7 @@ tl_object_ptr<telegram_api::InputMedia> DocumentsManager::get_input_media(
     }
     return make_tl_object<telegram_api::inputMediaUploadedDocument>(
         flags, false /*ignored*/, std::move(input_file), std::move(input_thumbnail), document->mime_type,
-        std::move(attributes), caption, vector<tl_object_ptr<telegram_api::InputDocument>>(), 0);
+        std::move(attributes), vector<tl_object_ptr<telegram_api::InputDocument>>(), 0);
   }
 
   return nullptr;

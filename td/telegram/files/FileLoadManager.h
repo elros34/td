@@ -33,6 +33,7 @@ class FileLoadManager final : public Actor {
     Callback(const Callback &) = delete;
     Callback &operator=(const Callback &) = delete;
     ~Callback() override = default;
+    virtual void on_start_download(QueryId id) = 0;
     virtual void on_partial_download(QueryId id, const PartialLocalFileLocation &partial_local, int64 ready_size) = 0;
     virtual void on_partial_upload(QueryId id, const PartialRemoteFileLocation &partial_remote, int64 ready_size) = 0;
     virtual void on_upload_ok(QueryId id, FileType file_type, const PartialRemoteFileLocation &remtoe, int64 size) = 0;
@@ -43,11 +44,11 @@ class FileLoadManager final : public Actor {
 
   explicit FileLoadManager(ActorShared<Callback> callback, ActorShared<> parent);
   void download(QueryId id, const FullRemoteFileLocation &remote_location, const LocalFileLocation &local, int64 size,
-                string name, const FileEncryptionKey &encryption_key, int priority);
+                string name, const FileEncryptionKey &encryption_key, int8 priority);
   void upload(QueryId id, const LocalFileLocation &local_location, const RemoteFileLocation &remote_location,
-              int64 size, const FileEncryptionKey &encryption_key, int priority, vector<int> bad_parts);
-  void upload_by_hash(QueryId id, const FullLocalFileLocation &local_location, int64 size, int priority);
-  void update_priority(QueryId id, int priority);
+              int64 size, const FileEncryptionKey &encryption_key, int8 priority, vector<int> bad_parts);
+  void upload_by_hash(QueryId id, const FullLocalFileLocation &local_location, int64 size, int8 priority);
+  void update_priority(QueryId id, int8 priority);
   void from_bytes(QueryId id, FileType type, BufferSlice bytes, string name);
   void cancel(QueryId id);
   void update_local_file_location(QueryId id, const LocalFileLocation &local);
@@ -80,6 +81,7 @@ class FileLoadManager final : public Actor {
 
   void close_node(NodeId node_id);
 
+  void on_start_download();
   void on_partial_download(const PartialLocalFileLocation &partial_local, int64 ready_size);
   void on_partial_upload(const PartialRemoteFileLocation &partial_remote, int64 ready_size);
   void on_ok_download(const FullLocalFileLocation &local, int64 size);
@@ -96,6 +98,9 @@ class FileLoadManager final : public Actor {
    private:
     ActorShared<FileLoadManager> actor_id_;
 
+    void on_start_download() override {
+      send_closure(actor_id_, &FileLoadManager::on_start_download);
+    }
     void on_partial_download(const PartialLocalFileLocation &partial_local, int64 ready_size) override {
       send_closure(actor_id_, &FileLoadManager::on_partial_download, partial_local, ready_size);
     }

@@ -329,7 +329,7 @@ bool UpdatesManager::is_acceptable_message_entities(
     if (entity->get_id() == telegram_api::messageEntityMentionName::ID) {
       auto entity_mention_name = static_cast<const telegram_api::messageEntityMentionName *>(entity.get());
       UserId user_id(entity_mention_name->user_id_);
-      if (!td_->contacts_manager_->have_user(user_id)) {
+      if (!td_->contacts_manager_->have_user(user_id) || !td_->contacts_manager_->have_input_user(user_id)) {
         return false;
       }
     }
@@ -1465,8 +1465,9 @@ void UpdatesManager::on_update(tl_object_ptr<telegram_api::updateUserTyping> upd
     return;
   }
   send_closure(G()->td(), &Td::send_update,
-               make_tl_object<td_api::updateUserChatAction>(dialog_id.get(), user_id.get(),
-                                                            convertSendMessageAction(std::move(update->action_))));
+               make_tl_object<td_api::updateUserChatAction>(
+                   dialog_id.get(), td_->contacts_manager_->get_user_id_object(user_id, "updateUserTyping"),
+                   convertSendMessageAction(std::move(update->action_))));
 }
 
 void UpdatesManager::on_update(tl_object_ptr<telegram_api::updateChatUserTyping> update, bool /*force_apply*/) {
@@ -1486,8 +1487,9 @@ void UpdatesManager::on_update(tl_object_ptr<telegram_api::updateChatUserTyping>
     }
   }
   send_closure(G()->td(), &Td::send_update,
-               make_tl_object<td_api::updateUserChatAction>(dialog_id.get(), user_id.get(),
-                                                            convertSendMessageAction(std::move(update->action_))));
+               make_tl_object<td_api::updateUserChatAction>(
+                   dialog_id.get(), td_->contacts_manager_->get_user_id_object(user_id, "updateChatUserTyping"),
+                   convertSendMessageAction(std::move(update->action_))));
 }
 
 void UpdatesManager::on_update(tl_object_ptr<telegram_api::updateEncryptedChatTyping> update, bool /*force_apply*/) {
@@ -1500,14 +1502,15 @@ void UpdatesManager::on_update(tl_object_ptr<telegram_api::updateEncryptedChatTy
   }
 
   UserId user_id = td_->contacts_manager_->get_secret_chat_user_id(secret_chat_id);
-  if (!user_id.is_valid()) {
+  if (!td_->contacts_manager_->have_user_force(user_id)) {
     LOG(DEBUG) << "Ignore secret chat typing of unknown " << user_id;
     return;
   }
 
   send_closure(G()->td(), &Td::send_update,
-               make_tl_object<td_api::updateUserChatAction>(dialog_id.get(), user_id.get(),
-                                                            make_tl_object<td_api::chatActionTyping>()));
+               make_tl_object<td_api::updateUserChatAction>(
+                   dialog_id.get(), td_->contacts_manager_->get_user_id_object(user_id, "updateEncryptedChatTyping"),
+                   make_tl_object<td_api::chatActionTyping>()));
 }
 
 void UpdatesManager::on_update(tl_object_ptr<telegram_api::updateUserStatus> update, bool /*force_apply*/) {
@@ -1665,7 +1668,8 @@ void UpdatesManager::on_update(tl_object_ptr<telegram_api::updateBotShippingQuer
 
   send_closure(G()->td(), &Td::send_update,
                make_tl_object<td_api::updateNewShippingQuery>(
-                   update->query_id_, user_id.get(), update->payload_.as_slice().str(),
+                   update->query_id_, td_->contacts_manager_->get_user_id_object(user_id, "updateNewShippingQuery"),
+                   update->payload_.as_slice().str(),
                    get_shipping_address_object(get_shipping_address(
                        std::move(update->shipping_address_)))));  // TODO use convert_shipping_address
 }
@@ -1677,11 +1681,11 @@ void UpdatesManager::on_update(tl_object_ptr<telegram_api::updateBotPrecheckoutQ
     return;
   }
 
-  send_closure(
-      G()->td(), &Td::send_update,
-      make_tl_object<td_api::updateNewPreCheckoutQuery>(
-          update->query_id_, user_id.get(), update->currency_, update->total_amount_, update->payload_.as_slice().str(),
-          update->shipping_option_id_, get_order_info_object(get_order_info(std::move(update->info_)))));
+  send_closure(G()->td(), &Td::send_update,
+               make_tl_object<td_api::updateNewPreCheckoutQuery>(
+                   update->query_id_, td_->contacts_manager_->get_user_id_object(user_id, "updateNewPreCheckoutQuery"),
+                   update->currency_, update->total_amount_, update->payload_.as_slice().str(),
+                   update->shipping_option_id_, get_order_info_object(get_order_info(std::move(update->info_)))));
 }
 
 void UpdatesManager::on_update(tl_object_ptr<telegram_api::updateBotWebhookJSON> update, bool /*force_apply*/) {

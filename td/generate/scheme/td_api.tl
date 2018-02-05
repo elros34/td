@@ -176,6 +176,12 @@ maskPosition point:MaskPoint x_shift:double y_shift:double scale:double = MaskPo
 //@description Represents a part of the text that needs to be formatted in some unusual way @offset Offset of the entity in UTF-16 code points @length Length of the entity, in UTF-16 code points @type Type of the entity
 textEntity offset:int32 length:int32 type:TextEntityType = TextEntity;
 
+//@description Contains a list of text entities @entities List of text entities
+textEntities entities:vector<textEntity> = TextEntities;
+
+//@description A text with some entities @text The text @entities Entities contained in the text
+formattedText text:string entities:vector<textEntity> = FormattedText;
+
 
 //@description Describes an animation file. The animation must be encoded in GIF or MPEG4 format @duration Duration of the animation, in seconds; as defined by the sender @width Width of the animation @height Height of the animation
 //@file_name Original name of the file; as defined by the sender @mime_type MIME type of the file, usually "image/gif" or "video/mp4" @thumbnail Animation thumbnail; may be null @animation File containing the animation
@@ -218,8 +224,8 @@ location latitude:double longitude:double = Location;
 venue location:location title:string address:string provider:string id:string = Venue;
 
 //@description Describes a game @id Game ID @short_name Game short name. To share a game use the URL https://t.me/{bot_username}?game={game_short_name} @title Game title @text Game text, usually containing scoreboards for a game
-//@text_entities Entities contained in the text @param_description Game description @photo Game photo @animation Game animation; may be null
-game id:int64 short_name:string title:string text:string text_entities:vector<textEntity> description:string photo:photo animation:animation = Game;
+//@param_description Game description @photo Game photo @animation Game animation; may be null
+game id:int64 short_name:string title:string text:formattedText description:string photo:photo animation:animation = Game;
 
 
 //@description Describes a user profile photo @id Photo identifier; 0 for an empty photo. Can be used to find a photo in a list of userProfilePhotos
@@ -527,7 +533,7 @@ chatTypeSecret secret_chat_id:int32 user_id:int32 = ChatType;
 //@unread_mention_count Number of unread messages with a mention/reply in the chat
 //@notification_settings Notification settings for this chat
 //@reply_markup_message_id Identifier of the message from which reply markup needs to be used; 0 if there is no default custom reply markup in the chat
-//@draft_message A draft of a message in the chat; may be null. parse_mode in input_message_text will always be null
+//@draft_message A draft of a message in the chat; may be null
 //@client_data Contains client-specific data associated with the chat. (For example, the chat position or local chat notification settings can be stored here.) Persistent if a message database is used
 chat id:int53 type:ChatType title:string photo:chatPhoto last_message:message order:int64 is_pinned:Bool unread_count:int32 last_read_inbox_message_id:int53 last_read_outbox_message_id:int53 unread_mention_count:int32 notification_settings:notificationSettings reply_markup_message_id:int53 draft_message:draftMessage client_data:string = Chat;
 
@@ -791,20 +797,20 @@ paymentReceipt date:int32 payments_provider_user_id:int32 invoice:invoice order_
 
 //@class MessageContent @description Contains the content of a message
 
-//@description A text message @text Text of the message @entities Entities contained in the text @web_page A preview of the web page that's mentioned in the text; may be null
-messageText text:string entities:vector<textEntity> web_page:webPage = MessageContent;
+//@description A text message @text Text of the message @web_page A preview of the web page that's mentioned in the text; may be null
+messageText text:formattedText web_page:webPage = MessageContent;
 
 //@description An animation message (GIF-style). @animation Message content @caption Animation caption
-messageAnimation animation:animation caption:string = MessageContent;
+messageAnimation animation:animation caption:formattedText = MessageContent;
 
 //@description An audio message @audio Message content @caption Audio caption
-messageAudio audio:audio caption:string = MessageContent;
+messageAudio audio:audio caption:formattedText = MessageContent;
 
 //@description A document message (general file) @document Message content @caption Document caption
-messageDocument document:document caption:string = MessageContent;
+messageDocument document:document caption:formattedText = MessageContent;
 
 //@description A photo message @photo Message content @caption Photo caption
-messagePhoto photo:photo caption:string = MessageContent;
+messagePhoto photo:photo caption:formattedText = MessageContent;
 
 //@description An expired photo message (self-destructed after TTL has elapsed)
 messageExpiredPhoto = MessageContent;
@@ -813,7 +819,7 @@ messageExpiredPhoto = MessageContent;
 messageSticker sticker:sticker = MessageContent;
 
 //@description A video message @video Message content @caption Video caption
-messageVideo video:video caption:string = MessageContent;
+messageVideo video:video caption:formattedText = MessageContent;
 
 //@description An expired video message (self-destructed after TTL has elapsed)
 messageExpiredVideo = MessageContent;
@@ -822,7 +828,7 @@ messageExpiredVideo = MessageContent;
 messageVideoNote video_note:videoNote is_viewed:Bool = MessageContent;
 
 //@description A voice note message @voice_note Message content @caption Voice note caption @is_listened True, if at least one of the recipients has listened to the voice note
-messageVoiceNote voice_note:voiceNote caption:string is_listened:Bool = MessageContent;
+messageVoiceNote voice_note:voiceNote caption:formattedText is_listened:Bool = MessageContent;
 
 //@description A message with a location @location Message content @live_period Time relative to the message sent date until which the location can be updated, in seconds
 messageLocation location:location live_period:int32 = MessageContent;
@@ -943,19 +949,6 @@ textEntityTypeTextUrl url:string = TextEntityType;
 textEntityTypeMentionName user_id:int32 = TextEntityType;
 
 
-//@class TextParseMode @description Describes the way the text should be parsed for MessageEntities. By default, text is treated as-is
-
-//@description The text should be parsed in markdown-style
-textParseModeMarkdown = TextParseMode;
-
-//@description The text should be parsed in HTML-style
-textParseModeHTML = TextParseMode;
-
-
-//@description Contains a list of text entities @entities List of text entities
-textEntities entities:vector<textEntity> = TextEntities;
-
-
 //@description A thumbnail to be sent along with a file; should be in JPEG or WEBP format for stickers, and less than 200 kB in size @thumbnail Thumbnail file to send. Sending thumbnails by file_id is currently not supported
 //@width Thumbnail width, usually shouldn't exceed 90. Use 0 if unknown @height Thumbnail height, usually shouldn't exceed 90. Use 0 if unknown
 inputThumbnail thumbnail:InputFile width:int32 height:int32 = InputThumbnail;
@@ -963,36 +956,36 @@ inputThumbnail thumbnail:InputFile width:int32 height:int32 = InputThumbnail;
 
 //@class InputMessageContent @description The content of a message to send
 
-//@description A text message @text Text to be sent @disable_web_page_preview True, if rich web page previews for URLs in the message text should be disabled @clear_draft True, if a chat message draft should be deleted
-//@entities Bold, Italic, Code, Pre, PreCode and TextUrl entities contained in the text. Can't be used with a non-null parse_mode @parse_mode Text parse mode; may be null. Can't be used in combination with enitities
-inputMessageText text:string disable_web_page_preview:Bool clear_draft:Bool entities:vector<textEntity> parse_mode:TextParseMode = InputMessageContent;
+//@description A text message @text Formatted text to be sent. Only Bold, Italic, Code, Pre, PreCode and TextUrl entities are allowed to be specified manually
+//@disable_web_page_preview True, if rich web page previews for URLs in the message text should be disabled @clear_draft True, if a chat message draft should be deleted
+inputMessageText text:formattedText disable_web_page_preview:Bool clear_draft:Bool = InputMessageContent;
 
 //@description An animation message (GIF-style). @animation Animation file to be sent @thumbnail Animation thumbnail, if available @duration Duration of the animation, in seconds @width Width of the animation; may be replaced by the server @height Height of the animation; may be replaced by the server @caption Animation caption; 0-200 characters
-inputMessageAnimation animation:InputFile thumbnail:inputThumbnail duration:int32 width:int32 height:int32 caption:string = InputMessageContent;
+inputMessageAnimation animation:InputFile thumbnail:inputThumbnail duration:int32 width:int32 height:int32 caption:formattedText = InputMessageContent;
 
 //@description An audio message @audio Audio file to be sent @album_cover_thumbnail Thumbnail of the cover for the album, if available @duration Duration of the audio, in seconds; may be replaced by the server @title Title of the audio; 0-64 characters; may be replaced by the server
 //@performer Performer of the audio; 0-64 characters, may be replaced by the server @caption Audio caption; 0-200 characters
-inputMessageAudio audio:InputFile album_cover_thumbnail:inputThumbnail duration:int32 title:string performer:string caption:string = InputMessageContent;
+inputMessageAudio audio:InputFile album_cover_thumbnail:inputThumbnail duration:int32 title:string performer:string caption:formattedText = InputMessageContent;
 
 //@description A document message (general file) @document Document to be sent @thumbnail Document thumbnail, if available @caption Document caption; 0-200 characters
-inputMessageDocument document:InputFile thumbnail:inputThumbnail caption:string = InputMessageContent;
+inputMessageDocument document:InputFile thumbnail:inputThumbnail caption:formattedText = InputMessageContent;
 
 //@description A photo message @photo Photo to send @thumbnail Photo thumbnail to be sent, this is sent to the other party in secret chats only @added_sticker_file_ids File identifiers of the stickers added to the photo, if applicable @width Photo width @height Photo height @caption Photo caption; 0-200 characters
 //@ttl Photo TTL (Time To Live), in seconds (0-60). A non-zero TTL can be specified only in private chats
-inputMessagePhoto photo:InputFile thumbnail:inputThumbnail added_sticker_file_ids:vector<int32> width:int32 height:int32 caption:string ttl:int32 = InputMessageContent;
+inputMessagePhoto photo:InputFile thumbnail:inputThumbnail added_sticker_file_ids:vector<int32> width:int32 height:int32 caption:formattedText ttl:int32 = InputMessageContent;
 
 //@description A sticker message @sticker Sticker to be sent @thumbnail Sticker thumbnail, if available @width Sticker width @height Sticker height
 inputMessageSticker sticker:InputFile thumbnail:inputThumbnail width:int32 height:int32 = InputMessageContent;
 
 //@description A video message @video Video to be sent @thumbnail Video thumbnail, if available @added_sticker_file_ids File identifiers of the stickers added to the video, if applicable @duration Duration of the video, in seconds @width Video width @height Video height @caption Video caption; 0-200 characters
 //@ttl Video TTL (Time To Live), in seconds (0-60). A non-zero TTL can be specified only in private chats
-inputMessageVideo video:InputFile thumbnail:inputThumbnail added_sticker_file_ids:vector<int32> duration:int32 width:int32 height:int32 caption:string ttl:int32 = InputMessageContent;
+inputMessageVideo video:InputFile thumbnail:inputThumbnail added_sticker_file_ids:vector<int32> duration:int32 width:int32 height:int32 caption:formattedText ttl:int32 = InputMessageContent;
 
 //@description A video note message @video_note Video note to be sent @thumbnail Video thumbnail, if available @duration Duration of the video, in seconds @length Video width and height; must be positive and not greater than 640
 inputMessageVideoNote video_note:InputFile thumbnail:inputThumbnail duration:int32 length:int32 = InputMessageContent;
 
 //@description A voice note message @voice_note Voice note to be sent @duration Duration of the voice note, in seconds @waveform Waveform representation of the voice note, in 5-bit format @caption Voice note caption; 0-200 characters
-inputMessageVoiceNote voice_note:InputFile duration:int32 waveform:bytes caption:string = InputMessageContent;
+inputMessageVoiceNote voice_note:InputFile duration:int32 waveform:bytes caption:formattedText = InputMessageContent;
 
 //@description A message with a location @location Location to be sent @live_period Period for which the location can be updated, in seconds; should bebetween 60 and 86400 for a live location and 0 otherwise
 inputMessageLocation location:location live_period:int32 = InputMessageContent;
@@ -1419,23 +1412,39 @@ chatEventLogFilters message_edits:Bool message_deletions:Bool message_pins:Bool 
 
 //@class DeviceToken @description Represents a token for push notifications
 
-//@description A token for Apple Push Notification Service @token Token, may be empty to de-register a device
-deviceTokenApplePush token:string = DeviceToken;
-
-//@description A token for Google Cloud Messaging @token Token, may be empty to de-register a device
+//@description A token for Google Cloud Messaging @token Device registration token, may be empty to de-register a device
 deviceTokenGoogleCloudMessaging token:string = DeviceToken;
 
-//@description A token for Microsoft Push Notification Service @token Token, may be empty to de-register a device
-deviceTokenMicrosoftPush token:string = DeviceToken;
+//@description A token for Apple Push Notification Service @device_token Device token, may be empty to de-register a device @is_app_sandbox True, if App Sandbox is enabled
+deviceTokenApplePush device_token:string is_app_sandbox:Bool = DeviceToken;
 
-//@description A token for Simple Push API @token Token, may be empty to de-register a device
-deviceTokenSimplePush token:string = DeviceToken;
+//@description A token for Apple Push Notification Service VoIP notifications @device_token Device token, may be empty to de-register a device @is_app_sandbox True, if App Sandbox is enabled
+deviceTokenApplePushVoIP device_token:string is_app_sandbox:Bool = DeviceToken;
+
+//@description A token for Windows Push Notification Services @access_token The access token that will be used to send notifications, may be empty to de-register a device
+deviceTokenWindowsPush access_token:string = DeviceToken;
+
+//@description A token for Microsoft Push Notification Service @channel_uri Push notification channel URI, may be empty to de-register a device
+deviceTokenMicrosoftPush channel_uri:string = DeviceToken;
+
+//@description A token for Microsoft Push Notification Service VoIP channel @channel_uri Push notification channel URI, may be empty to de-register a device
+deviceTokenMicrosoftPushVoIP channel_uri:string = DeviceToken;
+
+//@description A token for web Push API @endpoint Absolute URL exposed by the push service where the application server can send push messages, may be empty to de-register a device
+//@p256dh_base64url Base64url-encoded P-256 elliptic curve Diffie-Hellman public key @auth_base64url Base64url-encoded authentication secret
+deviceTokenWebPush endpoint:string p256dh_base64url:string auth_base64url:string = DeviceToken;
+
+//@description A token for Simple Push API for Firefox OS @endpoint Absolute URL exposed by the push service where the application server can send push messages, may be empty to de-register a device
+deviceTokenSimplePush endpoint:string = DeviceToken;
 
 //@description A token for Ubuntu Push Client service @token Token, may be empty to de-register a device
 deviceTokenUbuntuPush token:string = DeviceToken;
 
 //@description A token for Blackberry Push Service @token Token, may be empty to de-register a device
 deviceTokenBlackberryPush token:string = DeviceToken;
+
+//@description A token for Tizen Push Service @reg_id Push service registration identifier, may be empty to de-register a device
+deviceTokenTizenPush reg_id:string = DeviceToken;
 
 
 //@description Contains information about a wallpaper @id Unique persistent wallpaper identifier @sizes Available variants of the wallpaper in different sizes. These photos can only be downloaded; they can't be sent in a message @color Main color of the wallpaper in RGB24 format; should be treated as background color if no photos are specified
@@ -1531,8 +1540,8 @@ chatReportReasonPornography = ChatReportReason;
 chatReportReasonCustom text:string = ChatReportReason;
 
 
-//@description Contains a public HTTPS link to a message in a public supergroup or channel @link Message link
-publicMessageLink link:string = PublicMessageLink;
+//@description Contains a public HTTPS link to a message in a public supergroup or channel @link Message link @html HTML-code for embedding the message
+publicMessageLink link:string html:string = PublicMessageLink;
 
 
 //@class FileType @description Represents the type of a file
@@ -1695,6 +1704,15 @@ count count:int32 = Count;
 text text:string = Text;
 
 
+//@class TextParseMode @description Describes the way the text should be parsed for TextEntities
+
+//@description The text should be parsed in markdown-style
+textParseModeMarkdown = TextParseMode;
+
+//@description The text should be parsed in HTML-style
+textParseModeHTML = TextParseMode;
+
+
 //@class Proxy @description Contains information about a proxy server
 
 //@description An empty proxy server
@@ -1713,7 +1731,7 @@ inputSticker png_sticker:InputFile emojis:string mask_position:maskPosition = In
 //@description The user authorization state has changed @authorization_state New authorization state
 updateAuthorizationState authorization_state:AuthorizationState = Update;
 
-//@description A new message was received; can also be an outgoing message sent from a different device @message The new message @disable_notification True, if this message must not generate a notification @contains_mention True, if the message contains a mention of the current user
+//@description A new message was received; can also be an outgoing message @message The new message @disable_notification True, if this message must not generate a notification @contains_mention True, if the message contains a mention of the current user
 updateNewMessage message:message disable_notification:Bool contains_mention:Bool = Update;
 
 //@description A request to send a message has reached the Telegram server. This doesn't mean that the message will be sent successfully or even that the send message request will be processed. This update will be sent only if the option "use_quick_ack" is set to true. This update may be sent multiple times for the same message
@@ -1790,16 +1808,16 @@ updateUserChatAction chat_id:int53 user_id:int32 action:ChatAction = Update;
 //@description The user went online or offline @user_id User identifier @status New status of the user
 updateUserStatus user_id:int32 status:UserStatus = Update;
 
-//@description Some data of a user has changed. This update is guaranteed to come before the user identifier is returned to the client as long as the library has information on the user @user New data about the user
+//@description Some data of a user has changed. This update is guaranteed to come before the user identifier is returned to the client @user New data about the user
 updateUser user:user = Update;
 
-//@description Some data of a basic group has changed. This update is guaranteed to come before the basic group identifier is returned to the client, as long as the library has information on the group @basic_group New data about the group
+//@description Some data of a basic group has changed. This update is guaranteed to come before the basic group identifier is returned to the client @basic_group New data about the group
 updateBasicGroup basic_group:basicGroup = Update;
 
-//@description Some data of a supergroup or a channel has changed. This update is guaranteed to come before the supergroup identifier is returned to the client as long as the library has information on the supergroup @supergroup New data about the supergroup
+//@description Some data of a supergroup or a channel has changed. This update is guaranteed to come before the supergroup identifier is returned to the client @supergroup New data about the supergroup
 updateSupergroup supergroup:supergroup = Update;
 
-//@description Some data of a secret chat has changed. This update is guaranteed to come before the secret chat identifier is returned to the client as long as the library has information about the secret chat @secret_chat New data about the secret chat
+//@description Some data of a secret chat has changed. This update is guaranteed to come before the secret chat identifier is returned to the client @secret_chat New data about the secret chat
 updateSecretChat secret_chat:secretChat = Update;
 
 //@description Some data from userFullInfo has been changed @user_id User identifier @user_full_info New full information about the user
@@ -1824,7 +1842,7 @@ updateFileGenerationStart generation_id:int64 original_path:string destination_p
 //@description File generation is no longer needed @generation_id Unique identifier for the generation process
 updateFileGenerationStop generation_id:int64 = Update;
 
-//@description Information about a call was updated @call New data about a call
+//@description New call was created or information about a call was updated @call New data about a call
 updateCall call:call = Update;
 
 //@description Some privacy setting rules have been changed @setting The privacy setting @rules New privacy rules
@@ -2020,11 +2038,14 @@ getChats offset_order:int64 offset_chat_id:int53 limit:int32 = Chats;
 //@description Searches a public chat by its username. Currently only private chats, supergroups and channels can be public. Returns the chat if found; otherwise an error is returned @username Username to be resolved
 searchPublicChat username:string = Chat;
 
-//@description Searches public chats by a prefix of their username. Currently only private chats, supergroups and channels can be public. Returns a meaningful number of results. Returns nothing if the length of the searched username prefix is less than 5. Excludes private chats with contacts from the results @query Query to search for
+//@description Searches public chats by looking for specified query in their username and title. Currently only private chats, supergroups and channels can be public. Returns a meaningful number of results. Returns nothing if the length of the searched username prefix is less than 5. Excludes private chats with contacts and chats from the chat list from the results @query Query to search for
 searchPublicChats query:string = Chats;
 
 //@description Searches for the specified query in the title and username of already known chats, this is an offline request. Returns chats in the order seen in the chat list @query Query to search for. If the query is empty, returns up to 20 recently found chats @limit Maximum number of chats to be returned
 searchChats query:string limit:int32 = Chats;
+
+//@description Searches for the specified query in the title and username of already known chats via request to the server. Returns chats in the order seen in the chat list @query Query to search for @limit Maximum number of chats to be returned
+searchChatsOnServer query:string limit:int32 = Chats;
 
 //@description Returns a list of frequently used chats. Supported only if the chat info database is enabled @category Category of chats to be returned @limit Maximum number of chats to be returned; up to 30
 getTopChats category:TopChatCategory limit:int32 = Chats;
@@ -2095,8 +2116,11 @@ getActiveLiveLocationMessages = Messages;
 getChatMessageByDate chat_id:int53 date:int32 = Messages;
 
 
-//@description Returns a public HTTPS link to a message. Available only for messages in public supergroups and channels @chat_id Identifier of the chat to which the message belongs @message_id Identifier of the message
-getPublicMessageLink chat_id:int53 message_id:int53 = PublicMessageLink;
+//@description Returns a public HTTPS link to a message. Available only for messages in public supergroups and channels
+//@chat_id Identifier of the chat to which the message belongs
+//@message_id Identifier of the message
+//@for_album Pass true if a link for a whole media album should be returned
+getPublicMessageLink chat_id:int53 message_id:int53 for_album:Bool = PublicMessageLink;
 
 
 //@description Sends a message. Returns the sent message @chat_id Target chat @reply_to_message_id Identifier of the message to reply to or 0
@@ -2147,7 +2171,7 @@ editMessageLiveLocation chat_id:int53 message_id:int53 reply_markup:ReplyMarkup 
 
 //@description Edits the message content caption. Non-bots can edit messages for a limited period of time. Returns the edited message after the edit is completed server-side
 //@chat_id The chat the message belongs to @message_id Identifier of the message @reply_markup The new message reply markup; for bots only @caption New message content caption; 0-200 characters
-editMessageCaption chat_id:int53 message_id:int53 reply_markup:ReplyMarkup caption:string = Message;
+editMessageCaption chat_id:int53 message_id:int53 reply_markup:ReplyMarkup caption:formattedText = Message;
 
 //@description Edits the message reply markup; for bots only. Returns the edited message after the edit is completed server-side
 //@chat_id The chat the message belongs to @message_id Identifier of the message @reply_markup New message reply markup
@@ -2160,7 +2184,7 @@ editInlineMessageText inline_message_id:string reply_markup:ReplyMarkup input_me
 editInlineMessageLiveLocation inline_message_id:string reply_markup:ReplyMarkup location:location = Ok;
 
 //@description Edits the caption of an inline message sent via a bot; for bots only @inline_message_id Inline message identifier @reply_markup New message reply markup @caption New message content caption; 0-200 characters
-editInlineMessageCaption inline_message_id:string reply_markup:ReplyMarkup caption:string = Ok;
+editInlineMessageCaption inline_message_id:string reply_markup:ReplyMarkup caption:formattedText = Ok;
 
 //@description Edits the reply markup of an inline message sent via a bot; for bots only @inline_message_id Inline message identifier @reply_markup New message reply markup
 editInlineMessageReplyMarkup inline_message_id:string reply_markup:ReplyMarkup = Ok;
@@ -2168,6 +2192,9 @@ editInlineMessageReplyMarkup inline_message_id:string reply_markup:ReplyMarkup =
 
 //@description Returns all entities (mentions, hashtags, bot commands, URLs, and email addresses) contained in the text. This is an offline method. May be called before authorization. Can be called synchronously @text The text in which to look for entites
 getTextEntities text:string = TextEntities;
+
+//@description Parses Bold, Italic, Code, Pre, PreCode and TextUrl entities contained in the text. This is an offline method. May be called before authorization. Can be called synchronously @text The text which should be parsed @parse_mode Text parse mode
+parseTextEntities text:string parse_mode:TextParseMode = FormattedText;
 
 //@description Returns the MIME type of a file, guessed by its extension. Returns an empty string on failure. This is an offline method. May be called before authorization. Can be called synchronously @file_name The name of the file or path to the file
 getFileMimeType file_name:string = Text;
@@ -2241,16 +2268,16 @@ openMessageContent chat_id:int53 message_id:int53 = Ok;
 readAllChatMentions chat_id:int53 = Ok;
 
 
-//@description Returns an existing chat corresponding to a given user @user_id User identifier
-createPrivateChat user_id:int32 = Chat;
+//@description Returns an existing chat corresponding to a given user @user_id User identifier @force If true, the chat will be created without network request. In this case all information about the chat except its type, title and photo can be incorrect
+createPrivateChat user_id:int32 force:Bool = Chat;
 
-//@description Returns an existing chat corresponding to a known basic group @basic_group_id Basic group identifier
-createBasicGroupChat basic_group_id:int32 = Chat;
+//@description Returns an existing chat corresponding to a known basic group @basic_group_id Basic group identifier @force If true, the chat will be created without network request. In this case all information about the chat except its type, title and photo can be incorrect
+createBasicGroupChat basic_group_id:int32 force:Bool = Chat;
 
-//@description Returns an existing chat corresponding to a known supergroup or channel @supergroup_id Supergroup or channel identifier
-createSupergroupChat supergroup_id:int32 = Chat;
+//@description Returns an existing chat corresponding to a known supergroup or channel @supergroup_id Supergroup or channel identifier @force If true, the chat will be created without network request. In this case all information about the chat except its type, title and photo can be incorrect
+createSupergroupChat supergroup_id:int32 force:Bool = Chat;
 
-//@description Returns an existing chat corresponding to a known secret chat @secret_chat_id Secret Chat identifier
+//@description Returns an existing chat corresponding to a known secret chat @secret_chat_id Secret chat identifier
 createSecretChat secret_chat_id:int32 = Chat;
 
 //@description Creates a new basic group and sends a corresponding messageBasicGroupChatCreate. Returns the newly created chat @user_ids Identifiers of users to be added to the basic group @title Title of the new basic group; 1-255 characters
@@ -2314,8 +2341,8 @@ setPinnedChats chat_ids:vector<int53> = Ok;
 //@priority Priority of the download (1-32). The higher the priority, the earlier the file will be downloaded. If the priorities of two files are equal, then the last one for which downloadFile was called will be downloaded first
 downloadFile file_id:int32 priority:int32 = File;
 
-//@description Stops the downloading of a file. If a file has already been downloaded, does nothing @file_id Identifier of a file to stop downloading
-cancelDownloadFile file_id:int32 = Ok;
+//@description Stops the downloading of a file. If a file has already been downloaded, does nothing @file_id Identifier of a file to stop downloading @only_if_pending Pass true to stop downloading only if it hasn't been started, i.e. request hasn't been sent to server
+cancelDownloadFile file_id:int32 only_if_pending:Bool = Ok;
 
 //@description Asynchronously uploads a file to the cloud without sending it in a message. updateFile will be used to notify about upload progress and successful completion of the upload. The file will not have a persistent remote identifier until it will be sent in a message @file File to upload @file_type File type
 //@priority Priority of the upload (1-32). The higher the priority, the earlier the file will be uploaded. If the priorities of two files are equal, then the first one for which uploadFile was called will be uploaded first
@@ -2613,8 +2640,8 @@ getSupportUser = User;
 getWallpapers = Wallpapers;
 
 
-//@description Registers the currently used device for receiving push notifications @device_token Device token
-registerDevice device_token:DeviceToken = Ok;
+//@description Registers the currently used device for receiving push notifications @device_token Device token @other_user_ids List of at most 100 user identifiers of other users currently using the client
+registerDevice device_token:DeviceToken other_user_ids:vector<int32> = Ok;
 
 
 //@description Returns t.me URLs recently visited by a newly registered user @referrer Google Play referrer to identify the user

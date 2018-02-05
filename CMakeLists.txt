@@ -1,16 +1,18 @@
 cmake_minimum_required(VERSION 3.0.2 FATAL_ERROR)
 
-project(TDLib VERSION 1.0.0 LANGUAGES CXX C)
+project(TDLib VERSION 1.1.1 LANGUAGES CXX C)
+
+option(TD_ENABLE_JNI "Use \"ON\" to enable JNI-compatible TDLib API.")
 
 set(CMAKE_INSTALL_PREFIX "/usr")
 set(CPACK_PACKAGE_VERSION ${VERSION})
 set(CPACK_GENERATOR "RPM")
 set(CPACK_PACKAGE_NAME "tdlib")
-set(CPACK_PACKAGE_VERSION 1.0.0)
-set(CPACK_PACKAGE_RELEASE 3)
+set(CPACK_PACKAGE_VERSION 1.1.1)
+set(CPACK_PACKAGE_RELEASE 1)
 set(CPACK_RPM_PACKAGE_ARCHITECTURE "armv7hl")
 set(CPACK_PACKAGE_CONTACT "Blacksailer")
-set(CPACK_PACKAGE_VENDOR "Freelancer")
+set(CPACK_PACKAGE_VENDOR "Balcksailer's  workshop")
 set(CPACK_PACKAGING_INSTALL_PREFIX ${CMAKE_INSTALL_PREFIX})
 set(CPACK_RPM_PACKAGE_PROVIDES "tdjson,tdcore, tdclient")
 set(CPACK_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}-${CPACK_PACKAGE_VERSION}-${CPACK_PACKAGE_RELEASE}.${CMAKE_SYSTEM_PROCESSOR}")
@@ -256,7 +258,7 @@ endif()
 #SOURCE SETS
 
 set_source_files_properties(${TL_TD_AUTO} PROPERTIES GENERATED TRUE)
-if (TD_API_JAVA_PACKAGE)
+if (TD_ENABLE_JNI)
   set(TL_JNI_OBJECT
     td/tl/tl_jni_object.cpp
     td/tl/tl_jni_object.h
@@ -563,8 +565,20 @@ target_include_directories(tdcore PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURC
 target_include_directories(tdcore SYSTEM PRIVATE ${OPENSSL_INCLUDE_DIR})
 target_link_libraries(tdcore PUBLIC tdactor tdutils tdnet tddb PRIVATE ${OPENSSL_CRYPTO_LIBRARY})
 
+if (TD_ENABLE_JNI AND NOT ANDROID) # jni is available by default on Android
+  if (NOT JNI_FOUND)
+    find_package(JNI REQUIRED)
+  endif()
+  message(STATUS "Found JNI: ${JNI_INCLUDE_DIRS} ${JNI_LIBRARIES}")
+  target_include_directories(tdcore PUBLIC ${JAVA_INCLUDE_PATH} ${JAVA_INCLUDE_PATH2})
+  target_link_libraries(tdcore PUBLIC ${JAVA_JVM_LIBRARY})
+endif()
+
 if (NOT CMAKE_CROSSCOMPILING)
   add_dependencies(tdcore tl_generate_common)
+  if (TD_ENABLE_JNI)
+    add_dependencies(tdcore td_generate_java_api)
+  endif()
 endif()
 #Shared library for TdClient
 include(GenerateExportHeader)
@@ -586,6 +600,11 @@ set_target_properties(tdclient PROPERTIES COMPILE_FLAGS -DLIBTDCLIENT_STATIC_DEF
 
 
 
+
+if (TD_ENABLE_JNI AND NOT ANDROID) # jni is available by default on Android
+  target_include_directories(tdclient PUBLIC ${JAVA_INCLUDE_PATH} ${JAVA_INCLUDE_PATH2})
+  target_link_libraries(tdclient PUBLIC ${JAVA_JVM_LIBRARY})
+endif()
 
 # tdc - TDLib interface in pure c.
 add_library(tdc STATIC ${TL_C_SCHEME_SOURCE} td/telegram/td_c_client.cpp td/telegram/td_c_client.h)
@@ -624,12 +643,20 @@ target_link_libraries(tdjson_static PRIVATE tdjson_private)
 target_compile_definitions(tdjson_static PUBLIC TDJSON_STATIC_DEFINE)
 target_include_directories(tdjson_static PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>)
 
+set(BIGOBJ)
 if (WIN32 OR CYGWIN)
   if (MSVC)
-    target_compile_options(tdcore PUBLIC "/bigobj")
+    set(BIGOBJ "/bigobj")
   elseif (GCC)
-    target_compile_options(tdcore PUBLIC "-Wa,-mbig-obj")
+    set(BIGOBJ "-Wa,-mbig-obj")
   endif()
+endif()
+if (BIGOBJ)
+  target_compile_options(tdc PUBLIC ${BIGOBJ})
+  target_compile_options(tdcore PUBLIC ${BIGOBJ})
+  target_compile_options(tdclient PUBLIC ${BIGOBJ})
+  target_compile_options(tdjson PUBLIC ${BIGOBJ})
+  target_compile_options(tdjson_static PUBLIC ${BIGOBJ})
 endif()
 
 if (EMSCRIPTEN)
@@ -654,7 +681,7 @@ if (NOT CMAKE_CROSSCOMPILING)
     target_include_directories(tg_cli SYSTEM PRIVATE ${READLINE_INCLUDE_DIR})
     target_compile_definitions(tg_cli PRIVATE -DUSE_READLINE=1)
   endif()
-  target_link_libraries(tg_cli PRIVATE memprof tdcore tdtl -static-libgcc -static-libstdc++)
+  target_link_libraries(tg_cli PRIVATE memprof tdclient tdcore tdtl -static-libgcc -static-libstdc++)
   add_dependencies(tg_cli tl_generate_json)
 endif()
 
@@ -672,7 +699,9 @@ add_library(Td::TdStatic ALIAS TdStatic)
 add_library(Td::TdJson ALIAS TdJson)
 add_library(Td::TdJsonStatic ALIAS TdJsonStatic)
 
+
 install(TARGETS tdjson TdJson tdjson_static tdjson_private tdclient tdclient_shared tdcore TdJsonStatic TdStatic EXPORT TdTargets
+
   LIBRARY DESTINATION lib
   ARCHIVE DESTINATION lib
   RUNTIME DESTINATION bin
@@ -689,6 +718,9 @@ install(FILES ${TD_JSON_HEADERS}  DESTINATION include/td/telegram)
 install(FILES td/telegram/Client.h td/telegram/Log.h  DESTINATION include/td/telegram)
 install(FILES td/tl/TlObject.h DESTINATION include/td/tl)
 install(FILES ${TL_TD_AUTO_INCLUDES}/td/telegram/td_api.h ${TL_TD_AUTO_INCLUDES}/td/telegram/td_api.hpp DESTINATION include/td/telegram)
+if (TD_ENABLE_JNI)
+  install(FILES td/tl/tl_jni_object.h DESTINATION include/td/tl)
+endif()
 
 include(CMakePackageConfigHelpers)
 write_basic_package_version_file("TdConfigVersion.cmake"

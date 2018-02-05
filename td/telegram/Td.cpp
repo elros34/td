@@ -229,7 +229,8 @@ class GetRecentMeUrlsQuery : public Td::ResultHandler {
             result = nullptr;
             break;
           }
-          result->type_ = make_tl_object<td_api::tMeUrlTypeUser>(user_id.get());
+          result->type_ = make_tl_object<td_api::tMeUrlTypeUser>(
+              td->contacts_manager_->get_user_id_object(user_id, "tMeUrlTypeUser"));
           break;
         }
         case telegram_api::recentMeUrlChat::ID: {
@@ -241,7 +242,8 @@ class GetRecentMeUrlsQuery : public Td::ResultHandler {
             result = nullptr;
             break;
           }
-          result->type_ = make_tl_object<td_api::tMeUrlTypeSupergroup>(channel_id.get());
+          result->type_ = make_tl_object<td_api::tMeUrlTypeSupergroup>(
+              td->contacts_manager_->get_supergroup_id_object(channel_id, "tMeUrlTypeSupergroup"));
           break;
         }
         case telegram_api::recentMeUrlChatInvite::ID: {
@@ -908,6 +910,26 @@ class SearchChatsRequest : public RequestActor<> {
   }
 };
 
+class SearchChatsOnServerRequest : public RequestActor<> {
+  string query_;
+  int32 limit_;
+
+  vector<DialogId> dialog_ids_;
+
+  void do_run(Promise<Unit> &&promise) override {
+    dialog_ids_ = td->messages_manager_->search_dialogs_on_server(query_, limit_, std::move(promise));
+  }
+
+  void do_send_result() override {
+    send_result(MessagesManager::get_chats_object(dialog_ids_));
+  }
+
+ public:
+  SearchChatsOnServerRequest(ActorShared<Td> td, uint64 request_id, string query, int32 limit)
+      : RequestActor(std::move(td), request_id), query_(std::move(query)), limit_(limit) {
+  }
+};
+
 class GetGroupsInCommonRequest : public RequestActor<> {
   UserId user_id_;
   DialogId offset_dialog_id_;
@@ -985,20 +1007,25 @@ class GetMessagesRequest : public RequestOnceActor {
 
 class GetPublicMessageLinkRequest : public RequestActor<> {
   FullMessageId full_message_id_;
+  bool for_group_;
 
   string link_;
+  string html_;
 
   void do_run(Promise<Unit> &&promise) override {
-    link_ = td->messages_manager_->get_public_message_link(full_message_id_, std::move(promise));
+    std::tie(link_, html_) =
+        td->messages_manager_->get_public_message_link(full_message_id_, for_group_, std::move(promise));
   }
 
   void do_send_result() override {
-    send_result(make_tl_object<td_api::publicMessageLink>(link_));
+    send_result(make_tl_object<td_api::publicMessageLink>(link_, html_));
   }
 
  public:
-  GetPublicMessageLinkRequest(ActorShared<Td> td, uint64 request_id, int64 dialog_id, int64 message_id)
-      : RequestActor(std::move(td), request_id), full_message_id_(DialogId(dialog_id), MessageId(message_id)) {
+  GetPublicMessageLinkRequest(ActorShared<Td> td, uint64 request_id, int64 dialog_id, int64 message_id, bool for_group)
+      : RequestActor(std::move(td), request_id)
+      , full_message_id_(DialogId(dialog_id), MessageId(message_id))
+      , for_group_(for_group) {
   }
 };
 
@@ -1055,10 +1082,10 @@ class EditMessageLiveLocationRequest : public RequestOnceActor {
 class EditMessageCaptionRequest : public RequestOnceActor {
   FullMessageId full_message_id_;
   tl_object_ptr<td_api::ReplyMarkup> reply_markup_;
-  string caption_;
+  tl_object_ptr<td_api::formattedText> caption_;
 
   void do_run(Promise<Unit> &&promise) override {
-    td->messages_manager_->edit_message_caption(full_message_id_, std::move(reply_markup_), caption_,
+    td->messages_manager_->edit_message_caption(full_message_id_, std::move(reply_markup_), std::move(caption_),
                                                 std::move(promise));
   }
 
@@ -1068,7 +1095,8 @@ class EditMessageCaptionRequest : public RequestOnceActor {
 
  public:
   EditMessageCaptionRequest(ActorShared<Td> td, uint64 request_id, int64 dialog_id, int64 message_id,
-                            tl_object_ptr<td_api::ReplyMarkup> reply_markup, string caption)
+                            tl_object_ptr<td_api::ReplyMarkup> reply_markup,
+                            tl_object_ptr<td_api::formattedText> caption)
       : RequestOnceActor(std::move(td), request_id)
       , full_message_id_(DialogId(dialog_id), MessageId(message_id))
       , reply_markup_(std::move(reply_markup))
@@ -1142,16 +1170,17 @@ class EditInlineMessageLiveLocationRequest : public RequestOnceActor {
 class EditInlineMessageCaptionRequest : public RequestOnceActor {
   string inline_message_id_;
   tl_object_ptr<td_api::ReplyMarkup> reply_markup_;
-  string caption_;
+  tl_object_ptr<td_api::formattedText> caption_;
 
   void do_run(Promise<Unit> &&promise) override {
-    td->messages_manager_->edit_inline_message_caption(inline_message_id_, std::move(reply_markup_), caption_,
-                                                       std::move(promise));
+    td->messages_manager_->edit_inline_message_caption(inline_message_id_, std::move(reply_markup_),
+                                                       std::move(caption_), std::move(promise));
   }
 
  public:
   EditInlineMessageCaptionRequest(ActorShared<Td> td, uint64 request_id, string inline_message_id,
-                                  tl_object_ptr<td_api::ReplyMarkup> reply_markup, string caption)
+                                  tl_object_ptr<td_api::ReplyMarkup> reply_markup,
+                                  tl_object_ptr<td_api::formattedText> caption)
       : RequestOnceActor(std::move(td), request_id)
       , inline_message_id_(std::move(inline_message_id))
       , reply_markup_(std::move(reply_markup))
@@ -1642,9 +1671,10 @@ class GetWebPageInstantViewRequest : public RequestActor<> {
 
 class CreateChatRequest : public RequestActor<> {
   DialogId dialog_id_;
+  bool force_;
 
   void do_run(Promise<Unit> &&promise) override {
-    td->messages_manager_->create_dialog(dialog_id_, std::move(promise));
+    td->messages_manager_->create_dialog(dialog_id_, force_, std::move(promise));
   }
 
   void do_send_result() override {
@@ -1652,8 +1682,8 @@ class CreateChatRequest : public RequestActor<> {
   }
 
  public:
-  CreateChatRequest(ActorShared<Td> td, uint64 request_id, DialogId dialog_id)
-      : RequestActor<>(std::move(td), request_id), dialog_id_(dialog_id) {
+  CreateChatRequest(ActorShared<Td> td, uint64 request_id, DialogId dialog_id, bool force)
+      : RequestActor<>(std::move(td), request_id), dialog_id_(dialog_id), force_(force) {
   }
 };
 
@@ -1921,7 +1951,7 @@ class GetChatAdministratorsRequest : public RequestActor<> {
   }
 
   void do_send_result() override {
-    send_result(ContactsManager::get_users_object(-1, user_ids_));
+    send_result(td->contacts_manager_->get_users_object(-1, user_ids_));
   }
 
  public:
@@ -2048,9 +2078,12 @@ class ImportContactsRequest : public RequestActor<> {
   void do_send_result() override {
     CHECK(imported_contacts_.first.size() == contacts_.size());
     CHECK(imported_contacts_.second.size() == contacts_.size());
-    send_result(make_tl_object<td_api::importedContacts>(
-        transform(imported_contacts_.first, [](UserId user_id) { return user_id.get(); }),
-        std::move(imported_contacts_.second)));
+    send_result(make_tl_object<td_api::importedContacts>(transform(imported_contacts_.first,
+                                                                   [this](UserId user_id) {
+                                                                     return td->contacts_manager_->get_user_id_object(
+                                                                         user_id, "ImportContactsRequest");
+                                                                   }),
+                                                         std::move(imported_contacts_.second)));
   }
 
  public:
@@ -2071,7 +2104,7 @@ class SearchContactsRequest : public RequestActor<> {
   }
 
   void do_send_result() override {
-    send_result(ContactsManager::get_users_object(user_ids_.first, user_ids_.second));
+    send_result(td->contacts_manager_->get_users_object(user_ids_.first, user_ids_.second));
   }
 
  public:
@@ -2128,9 +2161,12 @@ class ChangeImportedContactsRequest : public RequestActor<> {
   void do_send_result() override {
     CHECK(imported_contacts_.first.size() == contacts_size_);
     CHECK(imported_contacts_.second.size() == contacts_size_);
-    send_result(make_tl_object<td_api::importedContacts>(
-        transform(imported_contacts_.first, [](UserId user_id) { return user_id.get(); }),
-        std::move(imported_contacts_.second)));
+    send_result(make_tl_object<td_api::importedContacts>(transform(imported_contacts_.first,
+                                                                   [this](UserId user_id) {
+                                                                     return td->contacts_manager_->get_user_id_object(
+                                                                         user_id, "ChangeImportedContactsRequest");
+                                                                   }),
+                                                         std::move(imported_contacts_.second)));
   }
 
  public:
@@ -2163,7 +2199,7 @@ class GetRecentInlineBotsRequest : public RequestActor<> {
   }
 
   void do_send_result() override {
-    send_result(ContactsManager::get_users_object(-1, user_ids_));
+    send_result(td->contacts_manager_->get_users_object(-1, user_ids_));
   }
 
  public:
@@ -2570,8 +2606,7 @@ class GetInstalledStickerSetsRequest : public RequestActor<> {
   }
 
   void do_send_result() override {
-    send_result(td->stickers_manager_->get_sticker_sets_object(narrow_cast<int32>(sticker_set_ids_.size()),
-                                                               sticker_set_ids_, 1));
+    send_result(td->stickers_manager_->get_sticker_sets_object(-1, sticker_set_ids_, 1));
   }
 
  public:
@@ -2615,8 +2650,7 @@ class GetTrendingStickerSetsRequest : public RequestActor<> {
   }
 
   void do_send_result() override {
-    send_result(td->stickers_manager_->get_sticker_sets_object(narrow_cast<int32>(sticker_set_ids_.size()),
-                                                               sticker_set_ids_, 5));
+    send_result(td->stickers_manager_->get_sticker_sets_object(-1, sticker_set_ids_, 5));
   }
 
  public:
@@ -2634,8 +2668,7 @@ class GetAttachedStickerSetsRequest : public RequestActor<> {
   }
 
   void do_send_result() override {
-    send_result(td->stickers_manager_->get_sticker_sets_object(narrow_cast<int32>(sticker_set_ids_.size()),
-                                                               sticker_set_ids_, 5));
+    send_result(td->stickers_manager_->get_sticker_sets_object(-1, sticker_set_ids_, 5));
   }
 
  public:
@@ -3501,7 +3534,7 @@ Td::Td(std::unique_ptr<TdCallback> callback) : callback_(std::move(callback)) {
 void Td::on_alarm_timeout_callback(void *td_ptr, int64 request_id) {
   auto td = static_cast<Td *>(td_ptr);
   auto td_id = td->actor_id(td);
-  send_closure(td_id, &Td::on_alarm_timeout, request_id);
+  send_closure_later(td_id, &Td::on_alarm_timeout, request_id);
 }
 
 void Td::on_alarm_timeout(int64 request_id) {
@@ -3525,6 +3558,17 @@ void Td::on_online_updated(bool force, bool send_update) {
   } else {
     alarm_timeout_.cancel_timeout(0);
   }
+}
+
+void Td::on_channel_unban_timeout(int64 channel_id_long) {
+  if (close_flag_ >= 2) {
+    return;
+  }
+  contacts_manager_->on_channel_unban_timeout(ChannelId(narrow_cast<int32>(channel_id_long)));
+}
+
+bool Td::is_online() const {
+  return is_online_;
 }
 
 void Td::request(uint64 id, tl_object_ptr<td_api::Function> function) {
@@ -3753,6 +3797,8 @@ void Td::on_authorization_lost() {
 }
 
 void Td::start_up() {
+  always_wait_for_mailbox();
+
   uint64 check_endianness = 0x0706050403020100;
   auto check_endianness_raw = reinterpret_cast<const unsigned char *>(&check_endianness);
   for (unsigned char c = 0; c < 8; c++) {
@@ -4351,7 +4397,7 @@ Status Td::fix_parameters(TdParameters &parameters) {
       dir += TD_DIR_SLASH;
     }
     TRY_STATUS(mkpath(dir, 0750));
-    TRY_RESULT(real_dir, realpath(dir));
+    TRY_RESULT(real_dir, realpath(dir, true));
     if (dir.back() != TD_DIR_SLASH) {
       dir += TD_DIR_SLASH;
     }
@@ -4598,7 +4644,7 @@ void Td::on_request(uint64 id, td_api::registerDevice &request) {
 
   CREATE_REQUEST_PROMISE(promise);
   send_closure(device_token_manager_, &DeviceTokenManager::register_device, std::move(request.device_token_),
-               std::move(promise));
+               std::move(request.other_user_ids_), std::move(promise));
 }
 
 void Td::on_request(uint64 id, td_api::getUserPrivacySettingRules &request) {
@@ -4737,7 +4783,7 @@ void Td::on_request(uint64 id, const td_api::getMessages &request) {
 
 void Td::on_request(uint64 id, const td_api::getPublicMessageLink &request) {
   CHECK_AUTH();
-  CREATE_REQUEST(GetPublicMessageLinkRequest, request.chat_id_, request.message_id_);
+  CREATE_REQUEST(GetPublicMessageLinkRequest, request.chat_id_, request.message_id_, request.for_album_);
 }
 
 void Td::on_request(uint64 id, const td_api::getFile &request) {
@@ -4962,6 +5008,13 @@ void Td::on_request(uint64 id, td_api::searchChats &request) {
   CHECK_IS_USER();
   CLEAN_INPUT_STRING(request.query_);
   CREATE_REQUEST(SearchChatsRequest, request.query_, request.limit_);
+}
+
+void Td::on_request(uint64 id, td_api::searchChatsOnServer &request) {
+  CHECK_AUTH();
+  CHECK_IS_USER();
+  CLEAN_INPUT_STRING(request.query_);
+  CREATE_REQUEST(SearchChatsOnServerRequest, request.query_, request.limit_);
 }
 
 void Td::on_request(uint64 id, const td_api::getGroupsInCommon &request) {
@@ -5193,7 +5246,6 @@ void Td::on_request(uint64 id, td_api::editMessageLiveLocation &request) {
 
 void Td::on_request(uint64 id, td_api::editMessageCaption &request) {
   CHECK_AUTH();
-  CLEAN_INPUT_STRING(request.caption_);
   CREATE_REQUEST(EditMessageCaptionRequest, request.chat_id_, request.message_id_, std::move(request.reply_markup_),
                  std::move(request.caption_));
 }
@@ -5225,7 +5277,6 @@ void Td::on_request(uint64 id, td_api::editInlineMessageCaption &request) {
   CHECK_AUTH();
   CHECK_IS_BOT();
   CLEAN_INPUT_STRING(request.inline_message_id_);
-  CLEAN_INPUT_STRING(request.caption_);
   CREATE_REQUEST(EditInlineMessageCaptionRequest, std::move(request.inline_message_id_),
                  std::move(request.reply_markup_), std::move(request.caption_));
 }
@@ -5315,22 +5366,22 @@ void Td::on_request(uint64 id, td_api::getWebPageInstantView &request) {
 
 void Td::on_request(uint64 id, const td_api::createPrivateChat &request) {
   CHECK_AUTH();
-  CREATE_REQUEST(CreateChatRequest, DialogId(UserId(request.user_id_)));
+  CREATE_REQUEST(CreateChatRequest, DialogId(UserId(request.user_id_)), request.force_);
 }
 
 void Td::on_request(uint64 id, const td_api::createBasicGroupChat &request) {
   CHECK_AUTH();
-  CREATE_REQUEST(CreateChatRequest, DialogId(ChatId(request.basic_group_id_)));
+  CREATE_REQUEST(CreateChatRequest, DialogId(ChatId(request.basic_group_id_)), request.force_);
 }
 
 void Td::on_request(uint64 id, const td_api::createSupergroupChat &request) {
   CHECK_AUTH();
-  CREATE_REQUEST(CreateChatRequest, DialogId(ChannelId(request.supergroup_id_)));
+  CREATE_REQUEST(CreateChatRequest, DialogId(ChannelId(request.supergroup_id_)), request.force_);
 }
 
 void Td::on_request(uint64 id, td_api::createSecretChat &request) {
   CHECK_AUTH();
-  CREATE_REQUEST(CreateChatRequest, DialogId(SecretChatId(request.secret_chat_id_)));
+  CREATE_REQUEST(CreateChatRequest, DialogId(SecretChatId(request.secret_chat_id_)), true);
 }
 
 void Td::on_request(uint64 id, td_api::createNewBasicGroupChat &request) {
@@ -5571,7 +5622,7 @@ void Td::on_request(uint64 id, const td_api::downloadFile &request) {
 void Td::on_request(uint64 id, const td_api::cancelDownloadFile &request) {
   CHECK_AUTH();
 
-  file_manager_->download(FileId(request.file_id_), nullptr, 0);
+  file_manager_->download(FileId(request.file_id_), nullptr, request.only_if_pending_ ? -1 : 0);
 
   send_closure(actor_id(this), &Td::send_result, id, make_tl_object<td_api::ok>());
 }
@@ -6423,6 +6474,11 @@ void Td::on_request(uint64 id, const td_api::getTextEntities &request) {
   send_result(id, do_static_request(request));
 }
 
+void Td::on_request(uint64 id, td_api::parseTextEntities &request) {
+  // don't check authorization state
+  send_result(id, do_static_request(request));
+}
+
 void Td::on_request(uint64 id, const td_api::getFileMimeType &request) {
   // don't check authorization state
   send_result(id, do_static_request(request));
@@ -6444,6 +6500,33 @@ td_api::object_ptr<td_api::Object> Td::do_static_request(const td_api::getTextEn
   }
   auto text_entities = find_entities(request.text_, false);
   return make_tl_object<td_api::textEntities>(get_text_entities_object(text_entities));
+}
+
+td_api::object_ptr<td_api::Object> Td::do_static_request(td_api::parseTextEntities &request) {
+  if (!check_utf8(request.text_)) {
+    return create_error_raw(400, "Text must be encoded in UTF-8");
+  }
+  if (request.parse_mode_ == nullptr) {
+    return create_error_raw(400, "Parse mode must be non-empty");
+  }
+
+  Result<vector<MessageEntity>> r_entities;
+  switch (request.parse_mode_->get_id()) {
+    case td_api::textParseModeHTML::ID:
+      r_entities = parse_html(request.text_);
+      break;
+    case td_api::textParseModeMarkdown::ID:
+      r_entities = parse_markdown(request.text_);
+      break;
+    default:
+      UNREACHABLE();
+      break;
+  }
+  if (r_entities.is_error()) {
+    return create_error_raw(400, PSLICE() << "Can't parse entities: " << r_entities.error().message());
+  }
+
+  return make_tl_object<td_api::formattedText>(std::move(request.text_), get_text_entities_object(r_entities.ok()));
 }
 
 td_api::object_ptr<td_api::Object> Td::do_static_request(const td_api::getFileMimeType &request) {

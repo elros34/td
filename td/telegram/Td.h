@@ -95,6 +95,10 @@ class Td final : public NetQueryCallback {
 
   void on_online_updated(bool force, bool send_update);
 
+  void on_channel_unban_timeout(int64 channel_id_long);
+
+  bool is_online() const;
+
   template <class ActorT, class... ArgsT>
   ActorId<ActorT> create_net_actor(ArgsT &&... args) {
     auto slot_id = request_actors_.create(ActorOwn<>(), RequestActorIdType);
@@ -187,7 +191,7 @@ class Td final : public NetQueryCallback {
   static td_api::object_ptr<td_api::Object> static_request(td_api::object_ptr<td_api::Function> function);
 
  private:
-  static constexpr const char *tdlib_version = "1.0.0";
+  static constexpr const char *tdlib_version = "1.1.1";
   static constexpr int32 ONLINE_TIMEOUT = 240;
 
   void send_result(uint64 id, tl_object_ptr<td_api::Object> object);
@@ -395,6 +399,8 @@ class Td final : public NetQueryCallback {
   void on_request(uint64 id, td_api::searchPublicChats &request);
 
   void on_request(uint64 id, td_api::searchChats &request);
+
+  void on_request(uint64 id, td_api::searchChatsOnServer &request);
 
   void on_request(uint64 id, const td_api::addRecentlyFoundChat &request);
 
@@ -736,6 +742,8 @@ class Td final : public NetQueryCallback {
 
   void on_request(uint64 id, const td_api::getTextEntities &request);
 
+  void on_request(uint64 id, td_api::parseTextEntities &request);
+
   void on_request(uint64 id, const td_api::getFileMimeType &request);
 
   void on_request(uint64 id, const td_api::getFileExtension &request);
@@ -757,6 +765,7 @@ class Td final : public NetQueryCallback {
   template <class T>
   static td_api::object_ptr<td_api::Object> do_static_request(const T &);
   static td_api::object_ptr<td_api::Object> do_static_request(const td_api::getTextEntities &request);
+  static td_api::object_ptr<td_api::Object> do_static_request(td_api::parseTextEntities &request);
   static td_api::object_ptr<td_api::Object> do_static_request(const td_api::getFileMimeType &request);
   static td_api::object_ptr<td_api::Object> do_static_request(const td_api::getFileExtension &request);
 

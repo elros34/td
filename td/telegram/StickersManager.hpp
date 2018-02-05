@@ -59,7 +59,7 @@ FileId StickersManager::parse_sticker(bool in_sticker_set, T &parser) {
   PARSE_FLAG(has_sticker_set_access_hash);
   PARSE_FLAG(in_sticker_set_stored);
   END_PARSE_FLAGS();
-  CHECK(in_sticker_set_stored == in_sticker_set);
+  CHECK(in_sticker_set_stored == in_sticker_set) << in_sticker_set << " " << in_sticker_set_stored;
   if (!in_sticker_set) {
     parse(sticker->set_id, parser);
     if (has_sticker_set_access_hash) {
@@ -159,7 +159,8 @@ void StickersManager::parse_sticker_set(StickerSet *sticker_set, T &parser) {
   parse(access_hash, parser);
   CHECK(sticker_set->id == sticker_set_id);
   if (sticker_set->access_hash != access_hash) {
-    LOG(ERROR) << "Sticker set " << sticker_set_id << " access hash has changed";
+    LOG(ERROR) << "Sticker set " << sticker_set_id << " access hash has changed from " << access_hash << " to "
+               << sticker_set->access_hash;
   }
 
   if (sticker_set->is_inited) {
