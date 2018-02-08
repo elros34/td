@@ -601,7 +601,7 @@ target_include_directories(tdclient_shared PUBLIC
   $<BUILD_INTERFACE:${TL_TD_AUTO_INCLUDES}>
 )
 target_link_libraries(tdclient PRIVATE tdcore)
-target_link_libraries(tdclient_shared PUBLIC tdcore PRIVATE -Wl,-whole-archive -static-libgcc -static-libstdc++ -Wl,-no-whole-archive)
+target_link_libraries(tdclient_shared PUBLIC tdcore_shared PRIVATE -Wl,-whole-archive -static-libgcc -static-libstdc++ -Wl,-no-whole-archive)
 generate_export_header(tdclient_shared BASE_NAME libtdclient)
 
 set_target_properties(tdclient PROPERTIES COMPILE_FLAGS -DLIBTDCLIENT_STATIC_DEFINE)
