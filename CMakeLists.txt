@@ -692,6 +692,9 @@ target_link_libraries(TdStatic INTERFACE tdclient)
 add_library(TdJson INTERFACE)
 target_link_libraries(TdJson INTERFACE tdjson)
 
+add_library(TdClient INTERFACE)
+target_link_libraries(TdClient INTERFACE tdclient_shared)
+
 add_library(TdJsonStatic INTERFACE)
 target_link_libraries(TdJsonStatic INTERFACE tdjson_static)
 
