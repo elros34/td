@@ -560,10 +560,16 @@ endif()
 
 
 # tdcore - mostly internal TDLib interface. One should use tdactor for interactions with it.
+include(GenerateExportHeader)
 add_library(tdcore STATIC ${TDLIB_SOURCE})
+add_library(tdcore_shared SHARED ${TDLIB_SOURCE})
 target_include_directories(tdcore PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}> $<BUILD_INTERFACE:${TL_TD_AUTO_INCLUDES}>)
 target_include_directories(tdcore SYSTEM PRIVATE ${OPENSSL_INCLUDE_DIR})
 target_link_libraries(tdcore PUBLIC tdactor tdutils tdnet tddb PRIVATE ${OPENSSL_CRYPTO_LIBRARY})
+target_link_libraries(tdcore_shared PUBLIC tdactor tdutils tdnet tddb PRIVATE ${OPENSSL_CRYPTO_LIBRARY})
+
+generate_export_header(tdcore_shared BASE_NAME libtdcore)
+set_target_properties(tdcore PROPERTIES COMPILE_FLAGS -DLIBTDCORE_STATIC_DEFINE)
 
 if (TD_ENABLE_JNI AND NOT ANDROID) # jni is available by default on Android
   if (NOT JNI_FOUND)
@@ -581,7 +587,6 @@ if (NOT CMAKE_CROSSCOMPILING)
   endif()
 endif()
 #Shared library for TdClient
-include(GenerateExportHeader)
 add_library(tdclient td/telegram/Client.cpp td/telegram/Client.h td/telegram/Log.cpp td/telegram/Log.h)
 add_library(tdclient_shared SHARED td/telegram/Client.cpp td/telegram/Client.h td/telegram/Log.cpp td/telegram/Log.h)
 target_include_directories(tdclient PUBLIC
@@ -703,7 +708,7 @@ add_library(Td::TdJson ALIAS TdJson)
 add_library(Td::TdJsonStatic ALIAS TdJsonStatic)
 
 
-install(TARGETS tdjson TdJson tdjson_static tdjson_private tdclient tdclient_shared tdcore TdJsonStatic TdStatic EXPORT TdTargets
+install(TARGETS tdjson TdJson tdjson_static tdjson_private tdclient tdclient_shared tdcore tdcore_shared TdJsonStatic TdStatic EXPORT TdTargets
 
   LIBRARY DESTINATION lib
   ARCHIVE DESTINATION lib
