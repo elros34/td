@@ -569,7 +569,7 @@ target_link_libraries(tdcore PUBLIC tdactor tdutils tdnet tddb PRIVATE ${OPENSSL
 
 target_include_directories(tdcore_shared PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}> $<BUILD_INTERFACE:${TL_TD_AUTO_INCLUDES}>)
 target_include_directories(tdcore_shared SYSTEM PRIVATE ${OPENSSL_INCLUDE_DIR})
-target_link_libraries(tdcore_shared PRIVATE  -Wl,-whole-archive  tdactor tdutils tdnet tddb -static-libgcc -static-libstdc++ -Wl,-no-whole-archive ${OPENSSL_CRYPTO_LIBRARY})
+target_link_libraries(tdcore_shared PUBLIC  -Wl,-whole-archive  tdactor tdutils tdnet tddb -static-libgcc -static-libstdc++ -Wl,-no-whole-archive PRIVATE ${OPENSSL_CRYPTO_LIBRARY})
 
 generate_export_header(tdcore_shared BASE_NAME libtdcore)
 set_target_properties(tdcore PROPERTIES COMPILE_FLAGS -DLIBTDCORE_STATIC_DEFINE)
