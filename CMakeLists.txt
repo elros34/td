@@ -710,22 +710,25 @@ add_library(Td::TdStatic ALIAS TdStatic)
 add_library(Td::TdJson ALIAS TdJson)
 add_library(Td::TdJsonStatic ALIAS TdJsonStatic)
 
-
-install(TARGETS tdjson TdJson tdjson_static tdjson_private tdclient tdclient_shared tdcore tdcore_shared TdJsonStatic TdStatic EXPORT TdTargets
-
+install(TARGETS  tdjson_static TdJsonStatic tdjson_private tdclient  tdcore TdStatic EXPORT TdTargets
   LIBRARY DESTINATION lib
   ARCHIVE DESTINATION lib
   RUNTIME DESTINATION bin
   INCLUDES DESTINATION include
 )
-
+install(TARGETS tdjson TdJson EXPORT TdTargets
+  LIBRARY DESTINATION lib
+  ARCHIVE DESTINATION lib
+  RUNTIME DESTINATION bin
+  INCLUDES DESTINATION include COMPONENT tdlib_json
+)
 install(EXPORT TdTargets
   FILE TdTargets.cmake
   NAMESPACE Td::
   DESTINATION lib/cmake/Td
 )
 
-install(FILES ${TD_JSON_HEADERS}  DESTINATION include/td/telegram)
+install(FILES ${TD_JSON_HEADERS}  DESTINATION include/td/telegram COMPONENT tdlib_json_headers)
 install(FILES td/telegram/Client.h td/telegram/Log.h  DESTINATION include/td/telegram)
 install(FILES td/tl/TlObject.h DESTINATION include/td/tl)
 install(FILES ${TL_TD_AUTO_INCLUDES}/td/telegram/td_api.h ${TL_TD_AUTO_INCLUDES}/td/telegram/td_api.hpp DESTINATION include/td/telegram)
@@ -741,3 +744,5 @@ write_basic_package_version_file("TdConfigVersion.cmake"
 install(FILES "TdConfig.cmake" "${CMAKE_CURRENT_BINARY_DIR}/TdConfigVersion.cmake"
   DESTINATION lib/cmake/Td
 )
+set(CPACK_ARCHIVE_COMPONENT_INSTALL ON)
+set(CPACK_COMPONENTS_ALL tdlib_json tdlib_json_headers)
