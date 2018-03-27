@@ -5,18 +5,6 @@ project(TDLib VERSION 1.1.1 LANGUAGES CXX C)
 option(TD_ENABLE_JNI "Use \"ON\" to enable JNI-compatible TDLib API.")
 
 set(CMAKE_INSTALL_PREFIX "/usr")
-set(CPACK_PACKAGE_VERSION ${VERSION})
-set(CPACK_GENERATOR "RPM")
-set(CPACK_PACKAGE_NAME "tdlib")
-set(CPACK_PACKAGE_VERSION 1.1.1)
-set(CPACK_PACKAGE_RELEASE 1)
-set(CPACK_RPM_PACKAGE_ARCHITECTURE "armv7hl")
-set(CPACK_PACKAGE_CONTACT "Blacksailer")
-set(CPACK_PACKAGE_VENDOR "Balcksailer's  workshop")
-set(CPACK_PACKAGING_INSTALL_PREFIX ${CMAKE_INSTALL_PREFIX})
-set(CPACK_RPM_PACKAGE_PROVIDES "tdjson,tdcore, tdclient")
-set(CPACK_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}-${CPACK_PACKAGE_VERSION}-${CPACK_PACKAGE_RELEASE}.${CMAKE_SYSTEM_PROCESSOR}")
-include(CPack)
 
 
 
@@ -715,12 +703,14 @@ install(TARGETS  tdjson_static TdJsonStatic tdjson_private tdclient  tdcore TdSt
   ARCHIVE DESTINATION lib
   RUNTIME DESTINATION bin
   INCLUDES DESTINATION include
+  COMPONENT cpp14
 )
 install(TARGETS tdjson TdJson EXPORT TdTargets
   LIBRARY DESTINATION lib
   ARCHIVE DESTINATION lib
   RUNTIME DESTINATION bin
-  INCLUDES DESTINATION include COMPONENT tdlib_json
+  INCLUDES DESTINATION include 
+  COMPONENT tdlib_json
 )
 install(EXPORT TdTargets
   FILE TdTargets.cmake
@@ -728,10 +718,13 @@ install(EXPORT TdTargets
   DESTINATION lib/cmake/Td
 )
 
-install(FILES ${TD_JSON_HEADERS}  DESTINATION include/td/telegram COMPONENT tdlib_json_headers)
-install(FILES td/telegram/Client.h td/telegram/Log.h  DESTINATION include/td/telegram)
-install(FILES td/tl/TlObject.h DESTINATION include/td/tl)
-install(FILES ${TL_TD_AUTO_INCLUDES}/td/telegram/td_api.h ${TL_TD_AUTO_INCLUDES}/td/telegram/td_api.hpp DESTINATION include/td/telegram)
+install(FILES ${TD_JSON_HEADERS}  DESTINATION include/td/telegram COMPONENT tdlib_json_devel)
+install(FILES td/tl/TlObject.h DESTINATION include/td/tl COMPONENT tdlib_json_devel)
+install(FILES ${TL_TD_AUTO_INCLUDES}/td/telegram/td_api.h DESTINATION include/td/telegram COMPONENT tdlib_json_devel)
+
+install(FILES td/telegram/Client.h td/telegram/Log.h  DESTINATION include/td/telegram COMPONENT cpp14)
+install(FILES ${TL_TD_AUTO_INCLUDES}/td/telegram/td_api.hpp DESTINATION include/td/telegram COMPONENT cpp14)
+
 if (TD_ENABLE_JNI)
   install(FILES td/tl/tl_jni_object.h DESTINATION include/td/tl)
 endif()
@@ -744,5 +737,25 @@ write_basic_package_version_file("TdConfigVersion.cmake"
 install(FILES "TdConfig.cmake" "${CMAKE_CURRENT_BINARY_DIR}/TdConfigVersion.cmake"
   DESTINATION lib/cmake/Td
 )
-set(CPACK_ARCHIVE_COMPONENT_INSTALL ON)
-set(CPACK_COMPONENTS_ALL tdlib_json tdlib_json_headers)
+
+set(CPACK_PACKAGE_VERSION ${VERSION})
+set(CPACK_GENERATOR "RPM")
+set(CPACK_PACKAGE_NAME "tdlib")
+set(CPACK_PACKAGE_VERSION 1.1.1)
+set(CPACK_PACKAGE_RELEASE 1)
+set(CPACK_RPM_PACKAGE_ARCHITECTURE "armv7hl")
+set(CPACK_PACKAGE_CONTACT "blacksailer@yandex.ru")
+set(CPACK_PACKAGE_VENDOR "Blacksailer's  workshop")
+set(CPACK_PACKAGING_INSTALL_PREFIX ${CMAKE_INSTALL_PREFIX})
+set(CPACK_RPM_PACKAGE_PROVIDES "tdjson")
+set(CPACK_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}-${CPACK_PACKAGE_VERSION}-${CPACK_PACKAGE_RELEASE}.${CMAKE_SYSTEM_PROCESSOR}")
+set(CPACK_RPM_PACKAGE_URL "https://github.com/blacksailer/td")
+set(CPACK_RPM_PACKAGE_DESCRIPTION "tdlib json binary library for Sailfish OS")
+set(CPACK_RPM_PACKAGE_LICENSE "Boost Software License - Version 1.0 - August 17th, 2003")
+set(CPACK_RPM_PACKAGE_RELEASE 1)
+
+set(CPACK_RPM_COMPONENT_INSTALL ON)
+
+set(CPACK_COMPONENTS_ALL tdlib_json tdlib_json_headers cpp14)
+
+include(CPack)
