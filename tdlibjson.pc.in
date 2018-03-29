@@ -1,0 +1,11 @@
+prefix=/usr
+exec_prefix=${prefix}
+includedir=${prefix}/include
+libdir=${prefix}/lib
+
+Name: tdlibjson
+Description: @CPACK_RPM_PACKAGE_DESCRIPTION@
+Version: @CPACK_PACKAGE_VERSION@
+URL: @CPACK_RPM_PACKAGE_URL@
+Cflags: -I${includedir}/td
+Libs: -L${libdir} -ltdjson

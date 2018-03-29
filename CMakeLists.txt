@@ -6,6 +6,34 @@ option(TD_ENABLE_JNI "Use \"ON\" to enable JNI-compatible TDLib API.")
 
 set(CMAKE_INSTALL_PREFIX "/usr")
 
+#CPack configure
+set(CPACK_PACKAGE_VERSION 1.1.1)
+set(CPACK_GENERATOR "RPM")
+set(CPACK_PACKAGE_NAME "tdlib")
+set(CPACK_RPM_PACKAGE_ARCHITECTURE "armv7hl")
+set(CPACK_PACKAGE_CONTACT "blacksailer@yandex.ru")
+set(CPACK_PACKAGE_VENDOR "Blacksailer's  workshop")
+set(CPACK_PACKAGING_INSTALL_PREFIX ${CMAKE_INSTALL_PREFIX})
+set(CPACK_RPM_PACKAGE_PROVIDES "tdjson")
+set(CPACK_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}-${CPACK_PACKAGE_VERSION}.${CPACK_RPM_PACKAGE_ARCHITECTURE}")
+set(CPACK_RPM_PACKAGE_URL "https://github.com/blacksailer/td")
+set(CPACK_RPM_PACKAGE_GROUP "Development/Libraries")
+set(CPACK_RPM_PACKAGE_DESCRIPTION "tdlib json binary library for Sailfish OS")
+set(CPACK_RPM_PACKAGE_LICENSE "Boost Software License - Version 1.0 - August 17th, 2003")
+
+set(CPACK_RPM_COMPONENT_INSTALL ON)
+
+set(CPACK_COMPONENTS_ALL json json-devel)
+set(CPACK_COMPONENT_JSON-DEVEL_DEPENDS json)
+set(CPACK_JSON_PACKAGE_NAME "tdlibjson")
+set(CPACK_RPM_JSON_FILE_NAME "${CPACK_PACKAGE_NAME}json-${CPACK_PACKAGE_VERSION}.${CPACK_RPM_PACKAGE_ARCHITECTURE}.rpm") 
+set(CPACK_RPM_JSON_USER_BINARY_SPECFILE ${CMAKE_CURRENT_SOURCE_DIR}/tdlibjson.spec.in)
+set(CPACK_JSON-DEVEL_PACKAGE_NAME "tdlibjson-devel")
+set(CPACK_RPM_JSON-DEVEL_PACKAGE_REQUIRES "tdlibjson")
+set(CPACK_RPM_JSON-DEVEL_FILE_NAME "${CPACK_PACKAGE_NAME}json-devel-${CPACK_PACKAGE_VERSION}.${CPACK_RPM_PACKAGE_ARCHITECTURE}.rpm") 
+set(CPACK_RPM_JSON-DEVEL_USER_BINARY_SPECFILE ${CMAKE_CURRENT_SOURCE_DIR}/tdlibjson-devel.spec.in)
+
+include(CPack)
 
 
 if (NOT DEFINED CMAKE_MODULE_PATH)
@@ -550,16 +578,11 @@ endif()
 # tdcore - mostly internal TDLib interface. One should use tdactor for interactions with it.
 include(GenerateExportHeader)
 add_library(tdcore STATIC ${TDLIB_SOURCE})
-add_library(tdcore_shared SHARED ${TDLIB_SOURCE})
 target_include_directories(tdcore PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}> $<BUILD_INTERFACE:${TL_TD_AUTO_INCLUDES}>)
 target_include_directories(tdcore SYSTEM PRIVATE ${OPENSSL_INCLUDE_DIR})
 target_link_libraries(tdcore PUBLIC tdactor tdutils tdnet tddb PRIVATE ${OPENSSL_CRYPTO_LIBRARY})
 
-target_include_directories(tdcore_shared PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}> $<BUILD_INTERFACE:${TL_TD_AUTO_INCLUDES}>)
-target_include_directories(tdcore_shared SYSTEM PRIVATE ${OPENSSL_INCLUDE_DIR})
-target_link_libraries(tdcore_shared PUBLIC  -Wl,-whole-archive  tdactor tdutils tdnet tddb -static-libgcc -static-libstdc++ -Wl,-no-whole-archive PRIVATE ${OPENSSL_CRYPTO_LIBRARY})
 
-generate_export_header(tdcore_shared BASE_NAME libtdcore)
 set_target_properties(tdcore PROPERTIES COMPILE_FLAGS -DLIBTDCORE_STATIC_DEFINE)
 
 if (TD_ENABLE_JNI AND NOT ANDROID) # jni is available by default on Android
@@ -577,21 +600,13 @@ if (NOT CMAKE_CROSSCOMPILING)
     add_dependencies(tdcore td_generate_java_api)
   endif()
 endif()
-#Shared library for TdClient
+
 add_library(tdclient td/telegram/Client.cpp td/telegram/Client.h td/telegram/Log.cpp td/telegram/Log.h)
-add_library(tdclient_shared SHARED td/telegram/Client.cpp td/telegram/Client.h td/telegram/Log.cpp td/telegram/Log.h)
 target_include_directories(tdclient PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
   $<BUILD_INTERFACE:${TL_TD_AUTO_INCLUDES}>
 )
-target_include_directories(tdclient_shared PUBLIC
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
-  $<BUILD_INTERFACE:${TL_TD_AUTO_INCLUDES}>
-)
 target_link_libraries(tdclient PRIVATE tdcore)
-target_link_libraries(tdclient_shared PUBLIC tdcore_shared PRIVATE -Wl,-whole-archive -static-libgcc -static-libstdc++ -Wl,-no-whole-archive)
-generate_export_header(tdclient_shared BASE_NAME libtdclient)
-
 set_target_properties(tdclient PROPERTIES COMPILE_FLAGS -DLIBTDCLIENT_STATIC_DEFINE)
 
 
@@ -630,6 +645,7 @@ add_library(tdjson SHARED ${TD_JSON_SOURCE} ${TD_JSON_HEADERS})
 target_link_libraries(tdjson PRIVATE -Wl,-whole-archive -static-libgcc -static-libstdc++ -Wl,-no-whole-archive tdjson_private)
 generate_export_header(tdjson EXPORT_FILE_NAME ${CMAKE_CURRENT_BINARY_DIR}/td/telegram/tdjson_export.h)
 target_include_directories(tdjson PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>)
+set_target_properties(tdjson PROPERTIES VERSION "${CPACK_PACKAGE_VERSION}"  SOVERSION 1)
 if (APPLE)
   set_target_properties(tdjson PROPERTIES LINK_FLAGS "-Wl,-exported_symbols_list,${CMAKE_CURRENT_SOURCE_DIR}/tdclientjson_export_list")
 endif()
@@ -699,29 +715,32 @@ add_library(Td::TdJson ALIAS TdJson)
 add_library(Td::TdJsonStatic ALIAS TdJsonStatic)
 
 install(TARGETS  tdjson_static TdJsonStatic tdjson_private tdclient  tdcore TdStatic EXPORT TdTargets
+  COMPONENT cpp14
   LIBRARY DESTINATION lib
   ARCHIVE DESTINATION lib
   RUNTIME DESTINATION bin
   INCLUDES DESTINATION include
-  COMPONENT cpp14
 )
 install(TARGETS tdjson TdJson EXPORT TdTargets
+  COMPONENT json
   LIBRARY DESTINATION lib
   ARCHIVE DESTINATION lib
   RUNTIME DESTINATION bin
   INCLUDES DESTINATION include 
-  COMPONENT tdlib_json
 )
 install(EXPORT TdTargets
   FILE TdTargets.cmake
   NAMESPACE Td::
   DESTINATION lib/cmake/Td
 )
+CONFIGURE_FILE("tdlibjson.pc.in" "tdlibjson.pc" @ONLY)
 
-install(FILES ${TD_JSON_HEADERS}  DESTINATION include/td/telegram COMPONENT tdlib_json_devel)
-install(FILES td/tl/TlObject.h DESTINATION include/td/tl COMPONENT tdlib_json_devel)
-install(FILES ${TL_TD_AUTO_INCLUDES}/td/telegram/td_api.h DESTINATION include/td/telegram COMPONENT tdlib_json_devel)
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/tdlibjson.pc DESTINATION lib/pkgconfig COMPONENT json-devel)
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/td/telegram/tdjson_export.h ${TL_TD_AUTO_INCLUDES}/td/telegram/td_api.h DESTINATION include/td/telegram COMPONENT json-devel)
+install(FILES ${TD_JSON_HEADERS}  DESTINATION include/td/telegram COMPONENT json-devel)
 
+install(FILES ${TL_TD_AUTO_INCLUDES}/td/telegram/td_api.h DESTINATION include/td/telegram COMPONENT cpp14)
+install(FILES td/tl/TlObject.h DESTINATION include/td/tl COMPONENT cpp14)
 install(FILES td/telegram/Client.h td/telegram/Log.h  DESTINATION include/td/telegram COMPONENT cpp14)
 install(FILES ${TL_TD_AUTO_INCLUDES}/td/telegram/td_api.hpp DESTINATION include/td/telegram COMPONENT cpp14)
 
@@ -737,25 +756,3 @@ write_basic_package_version_file("TdConfigVersion.cmake"
 install(FILES "TdConfig.cmake" "${CMAKE_CURRENT_BINARY_DIR}/TdConfigVersion.cmake"
   DESTINATION lib/cmake/Td
 )
-
-set(CPACK_PACKAGE_VERSION ${VERSION})
-set(CPACK_GENERATOR "RPM")
-set(CPACK_PACKAGE_NAME "tdlib")
-set(CPACK_PACKAGE_VERSION 1.1.1)
-set(CPACK_PACKAGE_RELEASE 1)
-set(CPACK_RPM_PACKAGE_ARCHITECTURE "armv7hl")
-set(CPACK_PACKAGE_CONTACT "blacksailer@yandex.ru")
-set(CPACK_PACKAGE_VENDOR "Blacksailer's  workshop")
-set(CPACK_PACKAGING_INSTALL_PREFIX ${CMAKE_INSTALL_PREFIX})
-set(CPACK_RPM_PACKAGE_PROVIDES "tdjson")
-set(CPACK_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}-${CPACK_PACKAGE_VERSION}-${CPACK_PACKAGE_RELEASE}.${CMAKE_SYSTEM_PROCESSOR}")
-set(CPACK_RPM_PACKAGE_URL "https://github.com/blacksailer/td")
-set(CPACK_RPM_PACKAGE_DESCRIPTION "tdlib json binary library for Sailfish OS")
-set(CPACK_RPM_PACKAGE_LICENSE "Boost Software License - Version 1.0 - August 17th, 2003")
-set(CPACK_RPM_PACKAGE_RELEASE 1)
-
-set(CPACK_RPM_COMPONENT_INSTALL ON)
-
-set(CPACK_COMPONENTS_ALL tdlib_json tdlib_json_headers cpp14)
-
-include(CPack)
