@@ -28,6 +28,7 @@ set(CMAKE_INSTALL_PREFIX "/usr")
 
 #CPack configure
 set(CPACK_PACKAGE_VERSION 1.2.0)
+set(CPACK_PACKAGE_RELEASE 2)
 set(CPACK_GENERATOR "RPM")
 set(CPACK_PACKAGE_NAME "tdlib")
 set(CPACK_RPM_PACKAGE_ARCHITECTURE "armv7hl")
@@ -733,7 +734,7 @@ set(TD_JSON_SOURCE td/telegram/td_json_client.cpp td/telegram/td_log.cpp)
 
 
 add_library(tdjson SHARED ${TD_JSON_SOURCE} ${TD_JSON_HEADERS})
-target_link_libraries(tdjson PRIVATE -Wl,-whole-archive -static-libgcc -static-libstdc++ -Wl,-no-whole-archive tdjson_private)
+target_link_libraries(tdjson PRIVATE -Wl,-whole-archive -static-libgcc -static-libstdc++ -Wl,-no-whole-archive tdjson_private tdclient tdutils)
 generate_export_header(tdjson EXPORT_FILE_NAME ${CMAKE_CURRENT_BINARY_DIR}/td/telegram/tdjson_export.h)
 
 target_include_directories(tdjson PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>)
