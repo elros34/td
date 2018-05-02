@@ -55,6 +55,11 @@ set(CPACK_RPM_JSON-DEVEL_USER_BINARY_SPECFILE ${CMAKE_CURRENT_SOURCE_DIR}/tdlibj
 
 include(CPack)
 
+#Disable installing (not building!) rest of library (tdactor,tdutils,tdclient etc.) By default ON
+set (DISABLE_CPP14_LIBS ON)
+
+#Disable benchmark and tests build. By default ON
+set (DISABLE_TESTS ON)
 
 if (NOT DEFINED CMAKE_MODULE_PATH)
   set(CMAKE_MODULE_PATH "")
@@ -297,12 +302,14 @@ add_subdirectory(sqlite)
 
 add_subdirectory(tddb)
 
-add_subdirectory(test)
+if(NOT DISABLE_TESTS)
+  add_subdirectory(test)
 
-if (NOT CMAKE_CROSSCOMPILING)
-  add_subdirectory(benchmark)
+  if (NOT CMAKE_CROSSCOMPILING)
+    add_subdirectory(benchmark)
+  endif()
+
 endif()
-
 
 get_directory_property(HAS_PARENT PARENT_DIRECTORY)
 if (HAS_PARENT)
@@ -804,7 +811,7 @@ target_link_libraries(TdJsonStatic INTERFACE tdjson_static)
 add_library(Td::TdStatic ALIAS TdStatic)
 add_library(Td::TdJson ALIAS TdJson)
 add_library(Td::TdJsonStatic ALIAS TdJsonStatic)
-
+if(NOT DISABLE_CPP14_LIBS)
 install(TARGETS  tdjson_static TdJsonStatic tdjson_private tdclient  tdcore TdStatic EXPORT TdTargets
   COMPONENT cpp14
   LIBRARY DESTINATION lib
@@ -812,6 +819,7 @@ install(TARGETS  tdjson_static TdJsonStatic tdjson_private tdclient  tdcore TdSt
   RUNTIME DESTINATION bin
   INCLUDES DESTINATION include
 )
+endif()
 install(TARGETS tdjson TdJson EXPORT TdTargets
   COMPONENT json
   LIBRARY DESTINATION lib
@@ -819,22 +827,23 @@ install(TARGETS tdjson TdJson EXPORT TdTargets
   RUNTIME DESTINATION bin
   INCLUDES DESTINATION include 
 )
+if(NOT DISABLE_CPP14_LIBS)
 install(EXPORT TdTargets
   FILE TdTargets.cmake
   NAMESPACE Td::
   DESTINATION lib/cmake/Td
 )
+endif()
 CONFIGURE_FILE("tdlibjson.pc.in" "tdlibjson.pc" @ONLY)
 
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/tdlibjson.pc DESTINATION lib/pkgconfig COMPONENT json-devel)
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/td/telegram/tdjson_export.h ${TL_TD_AUTO_INCLUDES}/td/telegram/td_api.h DESTINATION include/td/telegram COMPONENT json-devel)
 install(FILES ${TD_JSON_HEADERS}  DESTINATION include/td/telegram COMPONENT json-devel)
-
+if(NOT DISABLE_CPP14_LIBS)
 install(FILES ${TL_TD_AUTO_INCLUDES}/td/telegram/td_api.h DESTINATION include/td/telegram COMPONENT cpp14)
 install(FILES td/tl/TlObject.h DESTINATION include/td/tl COMPONENT cpp14)
 install(FILES td/telegram/Client.h td/telegram/Log.h  DESTINATION include/td/telegram COMPONENT cpp14)
 install(FILES ${TL_TD_AUTO_INCLUDES}/td/telegram/td_api.hpp DESTINATION include/td/telegram COMPONENT cpp14)
-
 if (TD_ENABLE_JNI)
   install(FILES td/tl/tl_jni_object.h DESTINATION include/td/tl)
 endif()
@@ -847,3 +856,4 @@ write_basic_package_version_file("TdConfigVersion.cmake"
 install(FILES "TdConfig.cmake" "${CMAKE_CURRENT_BINARY_DIR}/TdConfigVersion.cmake"
   DESTINATION lib/cmake/Td
 )
+endif()

@@ -45,9 +45,11 @@ elseif (MSVC)
   target_compile_options(tdsqlite PRIVATE /wd4996)
 endif()
 
+if(NOT DISABLE_CPP14_LIBS)
 install(TARGETS tdsqlite EXPORT TdTargets
   LIBRARY DESTINATION lib
   ARCHIVE DESTINATION lib
   RUNTIME DESTINATION bin
   INCLUDES DESTINATION include
 )
+endif()

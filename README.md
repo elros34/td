@@ -1,5 +1,34 @@
 # TDLib
 
+### Additions added by repository owner
+- Added DISABLE_CPP14_LIBS flag to cmake. Removes from **install** tddb,tdsqlite,tdactor,tdutils,tdclient. Only installs tdjson shared library
+- Added DISABLE_TESTS flag to cmake. If ON, disables building tests and benchmarks
+
+## Building lib for Sailfish OS
+
+### Building armv7hl version
+For some reason VMs of Sailfish OS gives ``virtual memory exhausted: out of memory`` no matter how many GBs of RAM you give and even with 3GB of swap (If someone know how to workaround issue with 32bit VMs, please inform and pull request) 
+Thats why you need a device to build a Library.
+
+Tested on ***INOI R7***
+1. Create swap file
+```
+#Enter root
+devel-su
+dd if=/dev/null of=/home/nemo/swap2gb bs=1024 count=2048000
+/sbin/mkswap /home/nemo/swap2gb
+/sbin/swapon /home/nemo/swap2gb
+```
+2. Clone and build library
+```
+git clone https://github.com/blacksailer/td
+cd td
+mkdir build && cd build
+cmake -DCMAKE_BUILD_TYPE=Release -DCPACK_RPM_PACKAGE_ARCHITECTURE=armv7hl ..
+make package
+```
+In result you have rpm packages of tdjson tdjson-devel in td/build dir.
+
 TDLib (Telegram Database library) is a cross-platform library for building [Telegram](https://telegram.org) clients. It can be easily used from almost any programming language.
 
 ## Table of Contents

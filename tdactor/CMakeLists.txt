@@ -57,9 +57,11 @@ target_link_libraries(tdactor PUBLIC tdutils)
 add_executable(example example/example.cpp)
 target_link_libraries(example PRIVATE tdactor)
 
+if(NOT DISABLE_CPP14_LIBS)
 install(TARGETS tdactor EXPORT TdTargets
   LIBRARY DESTINATION lib
   ARCHIVE DESTINATION lib
   RUNTIME DESTINATION bin
   INCLUDES DESTINATION include
 )
+endif()

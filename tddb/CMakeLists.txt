@@ -47,9 +47,11 @@ if (NOT CMAKE_CROSSCOMPILING)
   target_link_libraries(binlog_dump PRIVATE tddb)
 endif()
 
+if(NOT DISABLE_CPP14_LIBS)
 install(TARGETS tddb EXPORT TdTargets
   LIBRARY DESTINATION lib
   ARCHIVE DESTINATION lib
   RUNTIME DESTINATION bin
   INCLUDES DESTINATION include
 )
+endif()

@@ -238,9 +238,11 @@ endif()
 #adding static to use under SailfishOS
 target_link_libraries(tdutils PRIVATE -static-libgcc -static-libstdc++)
 
+if(NOT DISABLE_CPP14_LIBS)
 install(TARGETS tdutils EXPORT TdTargets
   LIBRARY DESTINATION lib
   ARCHIVE DESTINATION lib
   RUNTIME DESTINATION bin
   INCLUDES DESTINATION include
 )
+endif()
