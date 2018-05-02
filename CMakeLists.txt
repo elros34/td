@@ -670,7 +670,7 @@ target_include_directories(tdclient PUBLIC
   $<BUILD_INTERFACE:${TL_TD_AUTO_INCLUDES}>
 )
 target_link_libraries(tdclient PRIVATE tdcore)
-set_target_properties(tdclient PROPERTIES COMPILE_FLAGS -DTDCLIENT_STATIC_DEFINE) 
+set_target_properties(tdclient PROPERTIES COMPILE_FLAGS -DLIBTDCLIENT_STATIC_DEFINE) 
 
 
 
