@@ -24,10 +24,7 @@ dd if=/dev/null of=/home/nemo/swap2gb bs=1024 count=2048000
 git clone https://github.com/blacksailer/td
 cd td
 mkdir build && cd build
-cmake -DCMAKE_BUILD_TYPE=Release     -DCMAKE_C_COMPILER=/opt/gcc6/bin/gcc     -DCMAKE_CXX_COMPILER=/opt/gcc6/bin/g++     
--DCMAKE_EXE_LINKER_FLAGS="-L/opt/gcc6/lib -static-libstdc++"     -DCMAKE_MODULE_LINKER_FLAGS="-L/opt/gcc6/lib -static-libstdc++"     
--DCMAKE_SHARED_LINKER_FLAGS="-L/opt/gcc6/lib -static-libstdc++"  -DCMAKE_CXX_FLAGS_RELEASE="-O3"  
--DCPACK_RPM_PACKAGE_ARCHITECTURE=armv7hl ..
+cmake -DCMAKE_BUILD_TYPE=Release -DCPACK_RPM_PACKAGE_ARCHITECTURE=armv7hl ..
 make package
 ```
 In result you have rpm packages of tdjson tdjson-devel in td/build dir.

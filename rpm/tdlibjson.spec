@@ -1,6 +1,6 @@
 Name: tdlibjson
 Summary: Cross-platform library for building Telegram clients
-Version:    1.2.0
+Version:    1.3.0
 Release: 1
 Group:   Development/Libraries
 License: BSL-1.0
@@ -8,7 +8,6 @@ URL:     https://github.com/blacksailer/td
 Source0: tdlibjson.tar.gz
 BuildRequires: cmake >= 3.1
 BuildRequires: gperf
-BuildRequires: opt-gcc6
 BuildRequires: openssl-devel
 
 
@@ -38,13 +37,7 @@ mkdir -p %{_builddir}/build
 cd %{_builddir}/build
 
 %cmake \
--DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_C_COMPILER=/opt/gcc6/bin/gcc \
-    -DCMAKE_CXX_COMPILER=/opt/gcc6/bin/g++ \
-    -DCMAKE_EXE_LINKER_FLAGS="-L/opt/gcc6/lib -static-libstdc++" \
-    -DCMAKE_MODULE_LINKER_FLAGS="-L/opt/gcc6/lib -static-libstdc++" \
-    -DCMAKE_SHARED_LINKER_FLAGS="-L/opt/gcc6/lib -static-libstdc++" \
-    $SOURCE_DIR
+-DCMAKE_BUILD_TYPE=Release $SOURCE_DIR
 
 make
 
