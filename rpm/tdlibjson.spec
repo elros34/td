@@ -1,14 +1,13 @@
 Name: tdlibjson
 Summary: Cross-platform library for building Telegram clients
-Version:    1.2.0
+Version:    1.4.0
 Release: 1
 Group:   Development/Libraries
 License: BSL-1.0
 URL:     https://github.com/blacksailer/td
-Source0: tdlibjson.tar.gz
+Source0: %{name}-%{version}.tar.gz
 BuildRequires: cmake >= 3.1
 BuildRequires: gperf
-BuildRequires: opt-gcc6
 BuildRequires: openssl-devel
 
 
@@ -25,7 +24,7 @@ Requires:   %{name} = %{version}-%{release}
 %{summary}.
 
 %prep
-%setup -q
+%setup -q -n %{name}-%{version}
 
 %build
 
@@ -38,13 +37,7 @@ mkdir -p %{_builddir}/build
 cd %{_builddir}/build
 
 %cmake \
--DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_C_COMPILER=/opt/gcc6/bin/gcc \
-    -DCMAKE_CXX_COMPILER=/opt/gcc6/bin/g++ \
-    -DCMAKE_EXE_LINKER_FLAGS="-L/opt/gcc6/lib -static-libstdc++" \
-    -DCMAKE_MODULE_LINKER_FLAGS="-L/opt/gcc6/lib -static-libstdc++" \
-    -DCMAKE_SHARED_LINKER_FLAGS="-L/opt/gcc6/lib -static-libstdc++" \
-    $SOURCE_DIR
+-DCMAKE_BUILD_TYPE=Release $SOURCE_DIR
 
 make
 
@@ -59,7 +52,7 @@ cd %{_builddir}/build
 %defattr(-,root,root,-)
 %{_libdir}/libtdjson.so
 %{_libdir}/libtdjson.so.1
-%{_libdir}/libtdjson.so.1.2.0
+%{_libdir}/libtdjson.so.1.4.0
 
 %files devel
 %defattr(-,root,root,-)
